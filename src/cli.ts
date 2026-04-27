@@ -2,9 +2,16 @@
 
 import { Command } from "commander";
 import { optimize } from "./optimizer";
-import { optimizeImagesInPlace } from "./in-place-optimizer";
 import { scanSourceCodeForImages } from "./source-scanner";
 import { formatBytes, percentSaved } from "./utils";
+
+const CONVERTIBLE_TO_WEBP_EXTENSIONS = new Set([".png", ".jpg", ".jpeg", ".svg"]);
+
+function isConvertibleToWebp(filePath: string): boolean {
+  const dotIndex = filePath.lastIndexOf(".");
+  if (dotIndex === -1) return false;
+  return CONVERTIBLE_TO_WEBP_EXTENSIONS.has(filePath.slice(dotIndex).toLowerCase());
+}
 
 async function main() {
   const program = new Command();
@@ -15,11 +22,13 @@ async function main() {
 
   program
     .command("scan")
-    .description("Scan source code for local image references and optimize them in-place")
+    .description("Scan source code for local image references and convert them to WebP")
     .argument("<source...>", "One or more source files or directories")
-    .option("-q, --quality <number>", "Quality for lossy in-place optimization (0-100)", "80")
+    .option("-q, --quality <number>", "WebP quality (0-100)", "80")
     .option("-r, --recursive", "Recursively scan directories", false)
-    .option("--dry-run", "Show possible savings without overwriting files", false)
+    .option("--lossless", "Enable lossless WebP compression", false)
+    .option("--overwrite", "Allow overwriting existing WebP output files", false)
+    .option("--auto", "Analyze each image and choose the best WebP settings automatically", false)
     .option(
       "--source-ext <extensions>",
       "Comma-separated source file extensions to scan (default: html,css,js,ts,jsx,tsx,vue,svelte,astro,md,mdx)"
@@ -42,9 +51,6 @@ async function main() {
       if (options.recursive) {
         console.log("Recursive mode enabled");
       }
-      if (options.dryRun) {
-        console.log("Dry-run mode enabled; files will not be overwritten");
-      }
 
       const scan = await scanSourceCodeForImages(sources, {
         recursive: options.recursive,
@@ -53,22 +59,38 @@ async function main() {
 
       console.log(`Found ${scan.images.length} referenced local image(s) in ${scan.sourceFiles} source file(s).`);
 
-      const stats = await optimizeImagesInPlace(scan.images, {
+      const convertibleImages = scan.images.filter(isConvertibleToWebp);
+      const nonConvertibleImages = scan.images.filter((image) => !isConvertibleToWebp(image));
+
+      const stats = await optimize(convertibleImages, {
+        outDir: undefined,
         quality,
-        dryRun: options.dryRun === true,
+        lossless: options.lossless,
+        recursive: false,
+        overwrite: options.overwrite,
+        auto: options.auto === true,
       });
 
-      for (const result of stats.optimized) {
+      for (const result of stats.converted) {
         const pct = percentSaved(result.inputSize, result.outputSize);
         const saved = result.inputSize - result.outputSize;
-        const action = result.dryRun ? "WOULD" : "OK  ";
+        const savedStr = saved >= 0 ? formatBytes(saved) : `+${formatBytes(Math.abs(saved))}`;
+        const qualityInfo = result.quality !== undefined ? ` [q${result.quality}]` : "";
         console.log(
-          ` ${action} ${result.input}  (${pct}, ${formatBytes(saved)})`
+          `  OK  ${result.input} -> ${result.output}  (${pct}, ${savedStr})${qualityInfo}`
         );
       }
 
       for (const skipped of stats.skipped) {
+        console.log(` SKIP ${skipped}`);
+      }
+
+      for (const skipped of stats.autoSkipped) {
         console.log(` SKIP ${skipped.path}: ${skipped.reason}`);
+      }
+
+      for (const image of nonConvertibleImages) {
+        console.log(` SKIP ${image}: already WebP or unsupported for WebP conversion`);
       }
 
       for (const unresolved of scan.unresolved) {
@@ -83,14 +105,15 @@ async function main() {
       console.log("──────────────────────────────────────────");
       console.log(`  Source files : ${scan.sourceFiles}`);
       console.log(`  Images found : ${scan.images.length}`);
-      console.log(`  Optimized    : ${stats.optimized.length}${options.dryRun ? " (dry-run)" : ""}`);
-      console.log(`  Skipped      : ${stats.skipped.length}`);
+      console.log(`  Convertible  : ${convertibleImages.length}`);
+      console.log(`  Converted    : ${stats.converted.length}`);
+      console.log(`  Skipped      : ${stats.skipped.length + stats.autoSkipped.length + nonConvertibleImages.length}`);
       console.log(`  Unresolved   : ${scan.unresolved.length}`);
       console.log(`  Failed       : ${scan.failed.length + stats.failed.length}`);
 
-      if (stats.optimized.length > 0) {
-        const totalInput = stats.optimized.reduce((sum, r) => sum + r.inputSize, 0);
-        const totalOutput = stats.optimized.reduce((sum, r) => sum + r.outputSize, 0);
+      if (stats.converted.length > 0) {
+        const totalInput = stats.converted.reduce((sum, r) => sum + r.inputSize, 0);
+        const totalOutput = stats.converted.reduce((sum, r) => sum + r.outputSize, 0);
         console.log(
           `  Bytes saved  : ${formatBytes(stats.totalBytesSaved)} (${percentSaved(totalInput, totalOutput)})`
         );
