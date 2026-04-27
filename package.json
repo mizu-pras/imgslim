@@ -1,0 +1,22 @@
+{
+  "name": "imgslim",
+  "version": "1.0.0",
+  "description": "ImgSlim CLI tool to convert images to WebP format",
+  "bin": {
+    "imgslim": "./dist/cli.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/cli.js"
+  },
+  "keywords": ["image", "webp", "optimizer", "cli", "sharp"],
+  "license": "MIT",
+  "dependencies": {
+    "commander": "^12.1.0",
+    "sharp": "^0.33.5"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "typescript": "^5.7.0"
+  }
+}
