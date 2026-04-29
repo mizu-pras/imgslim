@@ -56,9 +56,15 @@ function findImageFiles(
       const entries = readdirSync(inputPath, { withFileTypes: true });
       for (const entry of entries) {
         const fullPath = join(inputPath, entry.name);
-        if (entry.isFile() && isImageFile(fullPath)) {
+
+        // Resolve symlinks to determine real file/dir type
+        const resolvedStats = entry.isSymbolicLink() ? statSync(fullPath) : null;
+        const isDir = resolvedStats ? resolvedStats.isDirectory() : entry.isDirectory();
+        const isFile = resolvedStats ? resolvedStats.isFile() : entry.isFile();
+
+        if (isFile && isImageFile(fullPath)) {
           results.push(fullPath);
-        } else if (entry.isDirectory() && recursive) {
+        } else if (isDir && recursive) {
           results.push(...findImageFiles(fullPath, recursive));
         }
       }
@@ -210,10 +216,23 @@ async function convertFile(
       inputSize,
       outputSize,
     });
-    stats.totalBytesSaved += inputSize - outputSize;
+    const bytesSaved = inputSize - outputSize;
+    if (bytesSaved > 0) {
+      stats.totalBytesSaved += bytesSaved;
+    }
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : String(err);
     stats.failed.push({ path: inputPath, error: message });
+  }
+}
+
+async function processBatch<T>(
+  items: T[],
+  concurrency: number,
+  fn: (item: T) => Promise<void>
+): Promise<void> {
+  for (let i = 0; i < items.length; i += concurrency) {
+    await Promise.all(items.slice(i, i + concurrency).map(fn));
   }
 }
 
@@ -241,10 +260,8 @@ export async function optimize(
     }
   }
 
-  // Convert each file
-  for (const file of files) {
-    await convertFile(file, options, stats);
-  }
+  // Convert files with concurrency (4 parallel sharp calls)
+  await processBatch(files, 4, (file) => convertFile(file, options, stats));
 
   return stats;
 }

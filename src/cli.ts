@@ -113,9 +113,11 @@ async function main() {
 
       if (stats.converted.length > 0) {
         const totalInput = stats.converted.reduce((sum, r) => sum + r.inputSize, 0);
-        const totalOutput = stats.converted.reduce((sum, r) => sum + r.outputSize, 0);
+        const pct = totalInput > 0
+          ? `${((stats.totalBytesSaved / totalInput) * 100).toFixed(1)}%`
+          : "0%";
         console.log(
-          `  Bytes saved  : ${formatBytes(stats.totalBytesSaved)} (${percentSaved(totalInput, totalOutput)})`
+          `  Bytes saved  : ${formatBytes(stats.totalBytesSaved)} (${pct})`
         );
       }
       console.log("──────────────────────────────────────────");
@@ -180,7 +182,6 @@ async function main() {
 
       // Print summary
       const totalInput = stats.converted.reduce((sum, r) => sum + r.inputSize, 0);
-      const totalOutput = stats.converted.reduce((sum, r) => sum + r.outputSize, 0);
 
       console.log("");
       console.log("──────────────────────────────────────────");
@@ -189,7 +190,9 @@ async function main() {
       console.log(`  Failed    : ${stats.failed.length}`);
 
       if (stats.converted.length > 0) {
-        const pct = totalInput > 0 ? percentSaved(totalInput, totalOutput) : "0%";
+        const pct = totalInput > 0
+          ? `${((stats.totalBytesSaved / totalInput) * 100).toFixed(1)}%`
+          : "0%";
         console.log(
           `  Bytes saved: ${formatBytes(stats.totalBytesSaved)} (${pct})`
         );

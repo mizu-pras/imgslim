@@ -80,9 +80,20 @@ function collectSourceFiles(inputPath: string, options: ScanOptions, extensions:
     }
 
     const fullPath = join(inputPath, entry.name);
-    if (entry.isFile() && isSourceFile(fullPath, extensions)) {
+
+    // Resolve symlinks: stat the entry to find the real file/dir type
+    const resolvedStats = entry.isSymbolicLink() ? statSync(fullPath) : null;
+    const isDir = resolvedStats ? resolvedStats.isDirectory() : entry.isDirectory();
+    const isFile = resolvedStats ? resolvedStats.isFile() : entry.isFile();
+
+    // Skip symlinked directories in ignored list
+    if (isDir && IGNORED_DIRS.has(entry.name)) {
+      continue;
+    }
+
+    if (isFile && isSourceFile(fullPath, extensions)) {
       files.push(fullPath);
-    } else if (entry.isDirectory() && options.recursive) {
+    } else if (isDir && options.recursive) {
       files.push(...collectSourceFiles(fullPath, options, extensions));
     }
   }
