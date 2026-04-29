@@ -35,6 +35,7 @@ const IGNORED_DIRS = new Set([
 export interface ScanOptions {
   recursive: boolean;
   sourceExtensions?: string[];
+  onProgress?: (file: string, current: number, total: number) => void;
 }
 
 export interface SourceScanResult {
@@ -151,7 +152,10 @@ export async function scanSourceCodeForImages(
   result.sourceFiles = sourceFiles.size;
   const images = new Set<string>();
 
+  let scanned = 0;
   for (const sourceFile of sourceFiles) {
+    scanned++;
+    options.onProgress?.(sourceFile, scanned, sourceFiles.size);
     try {
       const content = await readFile(sourceFile, "utf8");
       for (const match of content.matchAll(IMAGE_REFERENCE_RE)) {

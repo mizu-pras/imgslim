@@ -20,6 +20,8 @@ Input yang bisa dikonversi ke WebP:
 
 Output selalu berupa `.webp`.
 
+> **Catatan SVG**: Sharp melakukan rasterisasi SVG menjadi PNG terlebih dahulu sebelum dikonversi ke WebP. Hasilnya tetap `.webp`, namun gambar vektor akan menjadi raster (bitmap) dan bisa kehilangan skalabilitas. Pertimbangkan ini jika Anda menggunakan `.svg` sebagai aset vektor murni.
+
 ## Instalasi
 
 ```bash

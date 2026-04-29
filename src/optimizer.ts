@@ -1,9 +1,9 @@
 import { readdirSync, statSync, existsSync, mkdirSync } from "node:fs";
-import { stat, mkdir, writeFile } from "node:fs/promises";
-import { join, extname, basename, dirname, relative } from "node:path";
+import { stat, mkdir, writeFile, rename } from "node:fs/promises";
+import { join, extname, basename, dirname } from "node:path";
 import sharp from "sharp";
 
-const SUPPORTED_EXTENSIONS = new Set([".png", ".jpg", ".jpeg", ".svg"]);
+export const SUPPORTED_EXTENSIONS = new Set([".png", ".jpg", ".jpeg", ".svg"]);
 
 export interface OptimizerOptions {
   outDir?: string;
@@ -12,6 +12,7 @@ export interface OptimizerOptions {
   recursive: boolean;
   overwrite: boolean;
   auto: boolean;
+  onProgress?: (file: string, current: number, total: number) => void;
 }
 
 export interface ConversionResult {
@@ -35,7 +36,7 @@ export interface OptimizerStats {
   totalBytesSaved: number;
 }
 
-function isImageFile(filePath: string): boolean {
+export function isImageFile(filePath: string): boolean {
   return SUPPORTED_EXTENSIONS.has(extname(filePath).toLowerCase());
 }
 
@@ -92,6 +93,22 @@ function resolveOutputPath(
   return join(dirname(inputPath), webpName);
 }
 
+async function atomicWriteFile(outputPath: string, data: Buffer): Promise<void> {
+  const tmpPath = outputPath + ".tmp";
+  await writeFile(tmpPath, data);
+  await rename(tmpPath, outputPath);
+}
+
+async function atomicSharpToFile(
+  inputPath: string,
+  webpOptions: sharp.WebpOptions,
+  outputPath: string
+): Promise<void> {
+  const tmpPath = outputPath + ".tmp";
+  await sharp(inputPath).webp(webpOptions).toFile(tmpPath);
+  await rename(tmpPath, outputPath);
+}
+
 async function analyzeAndConvert(
   inputPath: string,
   options: OptimizerOptions,
@@ -109,7 +126,7 @@ async function analyzeAndConvert(
       });
       return;
     }
-    await writeFile(outputPath, buf);
+    await atomicWriteFile(outputPath, buf);
     stats.converted.push({
       input: inputPath,
       output: outputPath,
@@ -120,19 +137,24 @@ async function analyzeAndConvert(
     return;
   }
 
-  // Lossy mode: test candidate qualities [90, 80, 70, 60]
+  // Lossy mode: test candidate qualities [90, 80, 70, 60] in parallel
   const qualities = [90, 80, 70, 60];
-  const candidates: { quality: number; buffer: Buffer; size: number }[] = [];
-
-  for (const q of qualities) {
-    const buf = await sharp(inputPath).webp({ quality: q }).toBuffer();
-    candidates.push({ quality: q, buffer: buf, size: buf.length });
-  }
+  const candidatePromises = qualities.map(async (q) => {
+    try {
+      const buf = await sharp(inputPath).webp({ quality: q }).toBuffer();
+      return { quality: q, buffer: buf, size: buf.length } as const;
+    } catch {
+      return null; // individual quality failure shouldn't abort the rest
+    }
+  });
+  const candidates = (await Promise.all(candidatePromises)).filter(
+    (c): c is NonNullable<typeof c> => c !== null
+  );
 
   // Select highest quality with at least 10% size reduction
   for (const c of candidates) {
     if (c.size <= inputSize * 0.9) {
-      await writeFile(outputPath, c.buffer);
+      await atomicWriteFile(outputPath, c.buffer);
       stats.converted.push({
         input: inputPath,
         output: outputPath,
@@ -154,7 +176,7 @@ async function analyzeAndConvert(
   }
 
   if (bestCandidate) {
-    await writeFile(outputPath, bestCandidate.buffer);
+    await atomicWriteFile(outputPath, bestCandidate.buffer);
     stats.converted.push({
       input: inputPath,
       output: outputPath,
@@ -203,9 +225,11 @@ async function convertFile(
     }
 
     // Default mode: single pass with specified quality
-    await sharp(inputPath)
-      .webp({ quality: options.quality, lossless: options.lossless })
-      .toFile(outputPath);
+    await atomicSharpToFile(
+      inputPath,
+      { quality: options.quality, lossless: options.lossless },
+      outputPath
+    );
 
     const outputStat = await stat(outputPath);
     const outputSize = outputStat.size;
@@ -226,14 +250,20 @@ async function convertFile(
   }
 }
 
-async function processBatch<T>(
+async function processPool<T>(
   items: T[],
   concurrency: number,
   fn: (item: T) => Promise<void>
 ): Promise<void> {
-  for (let i = 0; i < items.length; i += concurrency) {
-    await Promise.all(items.slice(i, i + concurrency).map(fn));
-  }
+  let i = 0;
+  const next = async (): Promise<void> => {
+    while (i < items.length) {
+      const idx = i++;
+      await fn(items[idx]);
+    }
+  };
+  const workers = Math.min(concurrency, items.length);
+  await Promise.all(Array.from({ length: workers }, () => next()));
 }
 
 export async function optimize(
@@ -261,7 +291,18 @@ export async function optimize(
   }
 
   // Convert files with concurrency (4 parallel sharp calls)
-  await processBatch(files, 4, (file) => convertFile(file, options, stats));
+  let completed = 0;
+  const total = files.length;
+  await processPool(files, 4, async (file) => {
+    const current = ++completed;
+    options.onProgress?.(file, current, total);
+    await convertFile(file, options, stats);
+  });
+
+  // Clear progress line
+  if (total > 0 && options.onProgress) {
+    process.stderr.write("\r" + " ".repeat(80) + "\r");
+  }
 
   return stats;
 }

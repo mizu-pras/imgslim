@@ -1,44 +1,195 @@
 #!/usr/bin/env node
 
+import { performance } from "node:perf_hooks";
 import { Command } from "commander";
-import { optimize } from "./optimizer";
-import { scanSourceCodeForImages } from "./source-scanner";
+import { optimize, isImageFile, OptimizerStats } from "./optimizer";
+import { scanSourceCodeForImages, SourceScanResult } from "./source-scanner";
 import { formatBytes, percentSaved } from "./utils";
+import { loadConfig, ImgSlimConfig } from "./config";
 
-const CONVERTIBLE_TO_WEBP_EXTENSIONS = new Set([".png", ".jpg", ".jpeg", ".svg"]);
+// ── Helpers ────────────────────────────────────────────────────────────────
 
-function isConvertibleToWebp(filePath: string): boolean {
-  const dotIndex = filePath.lastIndexOf(".");
-  if (dotIndex === -1) return false;
-  return CONVERTIBLE_TO_WEBP_EXTENSIONS.has(filePath.slice(dotIndex).toLowerCase());
+interface OutputOptions {
+  verbose: boolean;
+  quiet: boolean;
+  json: boolean;
 }
 
+function validateFlags(auto: boolean, lossless: boolean, quality: number, defaultQuality: number): void {
+  if (auto && lossless) {
+    process.stderr.write("Warning: --auto overrides --lossless; lossless will not be used in auto mode\n");
+  }
+  if (auto && quality !== defaultQuality) {
+    process.stderr.write("Warning: --quality is ignored in --auto mode (auto tests its own quality levels)\n");
+  }
+}
+
+function parseQuality(value: string): number {
+  const q = parseInt(value, 10);
+  if (isNaN(q) || q < 0 || q > 100) {
+    process.stderr.write("Error: --quality must be a number between 0 and 100\n");
+    process.exit(1);
+  }
+  return q;
+}
+
+function getOutputOptions(program: Command): OutputOptions {
+  const opts = program.opts<{ json?: boolean; verbose?: boolean; quiet?: boolean }>();
+  return {
+    json: opts.json === true,
+    verbose: opts.verbose === true,
+    quiet: opts.quiet === true,
+  };
+}
+
+function printResults(stats: OptimizerStats, opts: OutputOptions, startedAt?: number): void {
+  if (opts.quiet || opts.json) return;
+
+  const elapsed = startedAt !== undefined ? ` [${(performance.now() - startedAt).toFixed(0)}ms]` : "";
+
+  for (const result of stats.converted) {
+    const pct = percentSaved(result.inputSize, result.outputSize);
+    const saved = result.inputSize - result.outputSize;
+    const savedStr = saved >= 0 ? formatBytes(saved) : `+${formatBytes(Math.abs(saved))}`;
+    const qualityInfo = result.quality !== undefined ? ` [q${result.quality}]` : "";
+    const timing = opts.verbose ? elapsed : "";
+    console.log(
+      `  OK  ${result.input} -> ${result.output}  (${pct}, ${savedStr})${qualityInfo}${timing}`
+    );
+  }
+
+  for (const skipped of stats.skipped) {
+    console.log(` SKIP ${skipped}`);
+  }
+
+  for (const skipped of stats.autoSkipped) {
+    console.log(` SKIP ${skipped.path}: ${skipped.reason}`);
+  }
+
+  for (const fail of stats.failed) {
+    process.stderr.write(` FAIL ${fail.path}: ${fail.error}\n`);
+  }
+}
+
+function buildJsonOutput(stats: OptimizerStats, scan?: SourceScanResult, extra?: Record<string, unknown>): string {
+  const totalInput = stats.converted.reduce((sum, r) => sum + r.inputSize, 0);
+  const result: Record<string, unknown> = {
+    converted: stats.converted,
+    skipped: stats.skipped,
+    autoSkipped: stats.autoSkipped,
+    failed: stats.failed,
+    summary: {
+      converted: stats.converted.length,
+      skipped: stats.skipped.length + stats.autoSkipped.length,
+      failed: stats.failed.length,
+      bytesSaved: stats.totalBytesSaved,
+      percentSaved: totalInput > 0
+        ? `${((stats.totalBytesSaved / totalInput) * 100).toFixed(1)}%`
+        : "0%",
+    },
+  };
+
+  if (scan) {
+    result.scan = {
+      sourceFiles: scan.sourceFiles,
+      imagesFound: scan.images.length,
+      unresolved: scan.unresolved,
+      scanFailed: scan.failed,
+    };
+  }
+
+  if (extra) {
+    Object.assign(result, extra);
+  }
+
+  return JSON.stringify(result, null, 2);
+}
+
+function printSummary(stats: OptimizerStats): void {
+  const totalInput = stats.converted.reduce((sum, r) => sum + r.inputSize, 0);
+
+  console.log("");
+  console.log("──────────────────────────────────────────");
+  console.log(`  Converted : ${stats.converted.length}`);
+  console.log(`  Skipped   : ${stats.skipped.length + stats.autoSkipped.length}`);
+  console.log(`  Failed    : ${stats.failed.length}`);
+
+  if (stats.converted.length > 0) {
+    const pct = totalInput > 0
+      ? `${((stats.totalBytesSaved / totalInput) * 100).toFixed(1)}%`
+      : "0%";
+    console.log(
+      `  Bytes saved: ${formatBytes(stats.totalBytesSaved)} (${pct})`
+    );
+  }
+  console.log("──────────────────────────────────────────");
+}
+
+function printScanSummary(
+  stats: OptimizerStats,
+  scan: SourceScanResult,
+  convertibleCount: number,
+  nonConvertibleCount: number
+): void {
+  console.log("");
+  console.log("──────────────────────────────────────────");
+  console.log(`  Source files : ${scan.sourceFiles}`);
+  console.log(`  Images found : ${scan.images.length}`);
+  console.log(`  Convertible  : ${convertibleCount}`);
+  console.log(`  Converted    : ${stats.converted.length}`);
+  console.log(`  Skipped      : ${stats.skipped.length + stats.autoSkipped.length + nonConvertibleCount}`);
+  console.log(`  Unresolved   : ${scan.unresolved.length}`);
+  console.log(`  Failed       : ${scan.failed.length + stats.failed.length}`);
+
+  if (stats.converted.length > 0) {
+    const totalInput = stats.converted.reduce((sum, r) => sum + r.inputSize, 0);
+    const pct = totalInput > 0
+      ? `${((stats.totalBytesSaved / totalInput) * 100).toFixed(1)}%`
+      : "0%";
+    console.log(
+      `  Bytes saved  : ${formatBytes(stats.totalBytesSaved)} (${pct})`
+    );
+  }
+  console.log("──────────────────────────────────────────");
+}
+
+// ── Main ────────────────────────────────────────────────────────────────────
+
 async function main() {
+  const config = loadConfig();
   const program = new Command();
 
   program
     .name("imgslim")
-    .description("ImgSlim converts and optimizes images");
+    .description("ImgSlim converts and optimizes images")
+    // Global output options (available to all commands including subcommands)
+    .option("--json", "Output results as JSON (for CI/CD pipelines)", config.json ?? false)
+    .option("--verbose", "Show extra detail including timing", config.verbose ?? false)
+    .option("--quiet", "Suppress per-file output, show summary only", config.quiet ?? false);
+
+  // ── scan command ──────────────────────────────────────────────────────────
 
   program
     .command("scan")
     .description("Scan source code for local image references and convert them to WebP")
     .argument("<source...>", "One or more source files or directories")
-    .option("-q, --quality <number>", "WebP quality (0-100)", "80")
-    .option("-r, --recursive", "Recursively scan directories", false)
-    .option("--lossless", "Enable lossless WebP compression", false)
-    .option("--overwrite", "Allow overwriting existing WebP output files", false)
-    .option("--auto", "Analyze each image and choose the best WebP settings automatically", false)
+    .option("-q, --quality <number>", "WebP quality (0-100)", String(config.quality ?? 80))
+    .option("-r, --recursive", "Recursively scan directories", config.recursive ?? false)
+    .option("--lossless", "Enable lossless WebP compression", config.lossless ?? false)
+    .option("--overwrite", "Allow overwriting existing WebP output files", config.overwrite ?? false)
+    .option("--auto", "Analyze each image and choose the best WebP settings automatically", config.auto ?? false)
+    .option("--dry-run", "Show what would be converted without writing any files", false)
     .option(
       "--source-ext <extensions>",
-      "Comma-separated source file extensions to scan (default: html,css,js,ts,jsx,tsx,vue,svelte,astro,md,mdx)"
+      "Comma-separated source file extensions to scan",
+      config.sourceExt
     )
     .action(async (sources: string[], options) => {
-      const quality = parseInt(options.quality, 10);
-      if (isNaN(quality) || quality < 0 || quality > 100) {
-        console.error("Error: --quality must be a number between 0 and 100");
-        process.exit(1);
-      }
+      const quality = parseQuality(options.quality);
+      const auto = options.auto === true;
+      validateFlags(auto, options.lossless, quality, config.quality ?? 80);
+
+      const outOpts = getOutputOptions(program);
 
       const sourceExtensions = options.sourceExt
         ? String(options.sourceExt)
@@ -47,20 +198,72 @@ async function main() {
             .filter(Boolean)
         : undefined;
 
-      console.log(`Scanning ${sources.length} source input(s)...`);
-      if (options.recursive) {
-        console.log("Recursive mode enabled");
+      const dryRun = options.dryRun === true;
+
+      if (!outOpts.json) {
+        console.log(`Scanning ${sources.length} source input(s)...`);
+        if (options.recursive) console.log("Recursive mode enabled");
+        if (dryRun) console.log("Dry-run mode: no files will be written");
       }
 
       const scan = await scanSourceCodeForImages(sources, {
         recursive: options.recursive,
         sourceExtensions,
+        onProgress: outOpts.json
+          ? undefined
+          : (file, current, total) => {
+              process.stderr.write(`\r  Scanning [${current}/${total}] ${file}`);
+            },
       });
 
-      console.log(`Found ${scan.images.length} referenced local image(s) in ${scan.sourceFiles} source file(s).`);
+      if (!outOpts.json) {
+        process.stderr.write("\r" + " ".repeat(80) + "\r");
+        console.log(`Found ${scan.images.length} referenced local image(s) in ${scan.sourceFiles} source file(s).`);
+      }
 
-      const convertibleImages = scan.images.filter(isConvertibleToWebp);
-      const nonConvertibleImages = scan.images.filter((image) => !isConvertibleToWebp(image));
+      const convertibleImages = scan.images.filter(isImageFile);
+      const nonConvertibleImages = scan.images.filter((image) => !isImageFile(image));
+
+      // Dry-run
+      if (dryRun) {
+        if (outOpts.json) {
+          const dryResult = buildJsonOutput(
+            { converted: [], skipped: [], autoSkipped: [], failed: [], totalBytesSaved: 0 },
+            scan,
+            { dryRun: true, wouldConvert: convertibleImages }
+          );
+          console.log(dryResult);
+          return;
+        }
+
+        console.log("");
+        if (convertibleImages.length > 0) {
+          console.log("Would convert:");
+          for (const img of convertibleImages) {
+            const out = img.replace(/\.(png|jpe?g|svg)$/i, "") + ".webp";
+            console.log(`  ${img} -> ${out}`);
+          }
+        }
+        for (const img of nonConvertibleImages) {
+          console.log(`  SKIP ${img}: already WebP or unsupported for WebP conversion`);
+        }
+        for (const unresolved of scan.unresolved) {
+          console.log(`  MISS ${unresolved.source}: ${unresolved.reference}`);
+        }
+        for (const fail of scan.failed) {
+          process.stderr.write(`  FAIL ${fail.path}: ${fail.error}\n`);
+        }
+        printScanSummary(
+          { converted: [], skipped: [], autoSkipped: [], failed: [], totalBytesSaved: 0 },
+          scan,
+          convertibleImages.length,
+          nonConvertibleImages.length
+        );
+        if (scan.failed.length > 0) process.exit(1);
+        return;
+      }
+
+      const startedAt = outOpts.verbose ? performance.now() : undefined;
 
       const stats = await optimize(convertibleImages, {
         outDir: undefined,
@@ -68,26 +271,21 @@ async function main() {
         lossless: options.lossless,
         recursive: false,
         overwrite: options.overwrite,
-        auto: options.auto === true,
+        auto,
+        onProgress: outOpts.json
+          ? undefined
+          : (file, current, total) => {
+              process.stderr.write(`\r  Converting [${current}/${total}] ${file}`);
+            },
       });
 
-      for (const result of stats.converted) {
-        const pct = percentSaved(result.inputSize, result.outputSize);
-        const saved = result.inputSize - result.outputSize;
-        const savedStr = saved >= 0 ? formatBytes(saved) : `+${formatBytes(Math.abs(saved))}`;
-        const qualityInfo = result.quality !== undefined ? ` [q${result.quality}]` : "";
-        console.log(
-          `  OK  ${result.input} -> ${result.output}  (${pct}, ${savedStr})${qualityInfo}`
-        );
+      if (outOpts.json) {
+        console.log(buildJsonOutput(stats, scan));
+        if (scan.failed.length + stats.failed.length > 0) process.exit(1);
+        return;
       }
 
-      for (const skipped of stats.skipped) {
-        console.log(` SKIP ${skipped}`);
-      }
-
-      for (const skipped of stats.autoSkipped) {
-        console.log(` SKIP ${skipped.path}: ${skipped.reason}`);
-      }
+      printResults(stats, outOpts, startedAt);
 
       for (const image of nonConvertibleImages) {
         console.log(` SKIP ${image}: already WebP or unsupported for WebP conversion`);
@@ -98,54 +296,37 @@ async function main() {
       }
 
       for (const fail of [...scan.failed, ...stats.failed]) {
-        console.error(` FAIL ${fail.path}: ${fail.error}`);
+        process.stderr.write(` FAIL ${fail.path}: ${fail.error}\n`);
       }
 
-      console.log("");
-      console.log("──────────────────────────────────────────");
-      console.log(`  Source files : ${scan.sourceFiles}`);
-      console.log(`  Images found : ${scan.images.length}`);
-      console.log(`  Convertible  : ${convertibleImages.length}`);
-      console.log(`  Converted    : ${stats.converted.length}`);
-      console.log(`  Skipped      : ${stats.skipped.length + stats.autoSkipped.length + nonConvertibleImages.length}`);
-      console.log(`  Unresolved   : ${scan.unresolved.length}`);
-      console.log(`  Failed       : ${scan.failed.length + stats.failed.length}`);
+      printScanSummary(stats, scan, convertibleImages.length, nonConvertibleImages.length);
 
-      if (stats.converted.length > 0) {
-        const totalInput = stats.converted.reduce((sum, r) => sum + r.inputSize, 0);
-        const pct = totalInput > 0
-          ? `${((stats.totalBytesSaved / totalInput) * 100).toFixed(1)}%`
-          : "0%";
-        console.log(
-          `  Bytes saved  : ${formatBytes(stats.totalBytesSaved)} (${pct})`
-        );
-      }
-      console.log("──────────────────────────────────────────");
-
-      if (scan.failed.length + stats.failed.length > 0) {
-        process.exit(1);
-      }
+      if (scan.failed.length + stats.failed.length > 0) process.exit(1);
     });
+
+  // ── default command (direct conversion) ───────────────────────────────────
 
   program
     .argument("<input...>", "One or more input files or directories")
-    .option("-o, --out-dir <dir>", "Output directory (default: next to input file)")
-    .option("-q, --quality <number>", "WebP quality (0-100)", "80")
-    .option("-r, --recursive", "Recursively scan directories", false)
-    .option("--lossless", "Enable lossless WebP compression", false)
-    .option("--overwrite", "Allow overwriting existing output files", false)
-    .option("--auto", "Analyze each image and choose the best WebP settings automatically", false)
+    .option("-o, --out-dir <dir>", "Output directory", config.outDir)
+    .option("-q, --quality <number>", "WebP quality (0-100)", String(config.quality ?? 80))
+    .option("-r, --recursive", "Recursively scan directories", config.recursive ?? false)
+    .option("--lossless", "Enable lossless WebP compression", config.lossless ?? false)
+    .option("--overwrite", "Allow overwriting existing output files", config.overwrite ?? false)
+    .option("--auto", "Analyze each image and choose the best WebP settings automatically", config.auto ?? false)
     .action(async (inputs: string[], options) => {
-      const quality = parseInt(options.quality, 10);
-      if (isNaN(quality) || quality < 0 || quality > 100) {
-        console.error("Error: --quality must be a number between 0 and 100");
-        process.exit(1);
+      const quality = parseQuality(options.quality);
+      const auto = options.auto === true;
+      validateFlags(auto, options.lossless, quality, config.quality ?? 80);
+
+      const outOpts = getOutputOptions(program);
+
+      if (!outOpts.json) {
+        console.log(`Converting ${inputs.length} input(s)...`);
+        if (options.recursive) console.log("Recursive mode enabled");
       }
 
-      console.log(`Converting ${inputs.length} input(s)...`);
-      if (options.recursive) {
-        console.log("Recursive mode enabled");
-      }
+      const startedAt = outOpts.verbose ? performance.now() : undefined;
 
       const stats = await optimize(inputs, {
         outDir: options.outDir,
@@ -153,61 +334,30 @@ async function main() {
         lossless: options.lossless,
         recursive: options.recursive,
         overwrite: options.overwrite,
-        auto: options.auto === true,
+        auto,
+        onProgress: outOpts.json
+          ? undefined
+          : (file, current, total) => {
+              process.stderr.write(`\r  Converting [${current}/${total}] ${file}`);
+            },
       });
 
-      // Print per-file results
-      for (const result of stats.converted) {
-        const pct = percentSaved(result.inputSize, result.outputSize);
-        const saved = result.inputSize - result.outputSize;
-        const savedStr = saved >= 0 ? formatBytes(saved) : `+${formatBytes(Math.abs(saved))}`;
-        const qualityInfo = result.quality !== undefined ? ` [q${result.quality}]` : "";
-
-        console.log(
-          `  OK  ${result.input} -> ${result.output}  (${pct}, ${savedStr})${qualityInfo}`
-        );
+      if (outOpts.json) {
+        console.log(buildJsonOutput(stats));
+        if (stats.failed.length > 0) process.exit(1);
+        return;
       }
 
-      for (const skipped of stats.skipped) {
-        console.log(` SKIP ${skipped}`);
-      }
+      printResults(stats, outOpts, startedAt);
+      printSummary(stats);
 
-      for (const skipped of stats.autoSkipped) {
-        console.log(` SKIP ${skipped.path}: ${skipped.reason}`);
-      }
-
-      for (const fail of stats.failed) {
-        console.error(` FAIL ${fail.path}: ${fail.error}`);
-      }
-
-      // Print summary
-      const totalInput = stats.converted.reduce((sum, r) => sum + r.inputSize, 0);
-
-      console.log("");
-      console.log("──────────────────────────────────────────");
-      console.log(`  Converted : ${stats.converted.length}`);
-      console.log(`  Skipped   : ${stats.skipped.length + stats.autoSkipped.length}`);
-      console.log(`  Failed    : ${stats.failed.length}`);
-
-      if (stats.converted.length > 0) {
-        const pct = totalInput > 0
-          ? `${((stats.totalBytesSaved / totalInput) * 100).toFixed(1)}%`
-          : "0%";
-        console.log(
-          `  Bytes saved: ${formatBytes(stats.totalBytesSaved)} (${pct})`
-        );
-      }
-      console.log("──────────────────────────────────────────");
-
-      if (stats.failed.length > 0) {
-        process.exit(1);
-      }
+      if (stats.failed.length > 0) process.exit(1);
     });
 
   await program.parseAsync(process.argv);
 }
 
 main().catch((err) => {
-  console.error("Fatal error:", err instanceof Error ? err.message : err);
+  process.stderr.write(`Fatal error: ${err instanceof Error ? err.message : err}\n`);
   process.exit(1);
 });

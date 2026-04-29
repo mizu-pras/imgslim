@@ -4,7 +4,7 @@
 
 import { describe, it, before, after } from 'node:test';
 import assert from 'node:assert/strict';
-import { execFileSync } from 'node:child_process';
+import { spawnSync } from 'node:child_process';
 import {
   cpSync,
   existsSync,
@@ -36,20 +36,16 @@ const TMP_ROOT = join(__dirname, 'test', 'tmp');
  * On failure: { stdout, stderr, exitCode: number }
  */
 function run(args) {
-  try {
-    const stdout = execFileSync('node', [CLI, ...args], {
-      encoding: 'utf8',
-      cwd: ROOT,
-      stdio: ['pipe', 'pipe', 'pipe'],
-    });
-    return { stdout, stderr: '', exitCode: 0 };
-  } catch (e) {
-    const stdout =
-      typeof e.stdout === 'string' ? e.stdout : (e.stdout ?? '').toString();
-    const stderr =
-      typeof e.stderr === 'string' ? e.stderr : (e.stderr ?? '').toString();
-    return { stdout, stderr, exitCode: e.status ?? 1 };
-  }
+  const result = spawnSync('node', [CLI, ...args], {
+    encoding: 'utf8',
+    cwd: ROOT,
+    stdio: 'pipe',
+  });
+  return {
+    stdout: (result.stdout || '').toString(),
+    stderr: (result.stderr || '').toString(),
+    exitCode: result.status ?? 1,
+  };
 }
 
 /**
@@ -321,6 +317,147 @@ describe('imgslim CLI', () => {
       assert.ok(
         !existsSync(join(dir, '1.webp')),
         'Filter html: .ts-referenced image NOT converted',
+      );
+    });
+
+    it('--dry-run should show what would be converted without writing', () => {
+      const dir = setupDir('scan-dryrun', ['jackpot.png', '0.png']);
+      writeFileSync(join(dir, 'page.html'), '<img src="jackpot.png"><img src="0.png">');
+
+      const { stdout, exitCode } = run(['scan', dir, '--dry-run']);
+
+      assert.strictEqual(exitCode, 0);
+      assert.ok(
+        stdout.includes('Dry-run mode'),
+        'Should indicate dry-run mode',
+      );
+      assert.ok(
+        stdout.includes('Would convert'),
+        'Should show what would be converted',
+      );
+      assert.ok(
+        stdout.includes('jackpot.webp'),
+        'Should show target webp path',
+      );
+      // Verify no webp files were actually created
+      assert.ok(
+        !existsSync(join(dir, 'jackpot.webp')),
+        'No webp should be created in dry-run',
+      );
+      assert.ok(
+        !existsSync(join(dir, '0.webp')),
+        'No webp should be created in dry-run',
+      );
+    });
+  });
+
+  // =========================================================================
+  //  Output formats
+  // =========================================================================
+
+  describe('output formats', () => {
+    it('--json should output valid JSON with expected keys', () => {
+      const dir = setupDir('fmt-json', ['0.png']);
+      const input = join(dir, '0.png');
+      const expected = join(dir, '0.webp');
+
+      const { stdout, stderr, exitCode } = run([input, '--json']);
+
+      assert.strictEqual(exitCode, 0);
+      assert.ok(existsSync(expected), 'WebP should still be created');
+
+      let parsed;
+      try {
+        parsed = JSON.parse(stdout.trim());
+      } catch {
+        assert.fail('stdout should be valid JSON');
+      }
+
+      assert.ok(Array.isArray(parsed.converted), 'Should have converted array');
+      assert.ok(Array.isArray(parsed.skipped), 'Should have skipped array');
+      assert.ok(Array.isArray(parsed.failed), 'Should have failed array');
+      assert.ok(parsed.summary, 'Should have summary');
+      assert.strictEqual(parsed.summary.converted, 1);
+      assert.ok(typeof parsed.summary.bytesSaved === 'number');
+      assert.ok(typeof parsed.summary.percentSaved === 'string');
+
+      // stdout should be JSON only — no human-readable text
+      assert.ok(!stdout.includes(' OK '));
+      assert.ok(!stdout.includes('SKIP'));
+      assert.ok(!stdout.includes('──'));
+    });
+
+    it('--json scan should include scan result keys', () => {
+      const dir = setupDir('fmt-json-scan', ['jackpot.png']);
+      writeFileSync(join(dir, 'index.html'), '<img src="jackpot.png">');
+
+      const { stdout, exitCode } = run(['scan', dir, '--json']);
+
+      assert.strictEqual(exitCode, 0);
+
+      const parsed = JSON.parse(stdout.trim());
+      assert.ok(parsed.scan, 'Scan JSON should include scan key');
+      assert.strictEqual(parsed.scan.sourceFiles, 1);
+      assert.strictEqual(parsed.scan.imagesFound, 1);
+      assert.ok(Array.isArray(parsed.scan.unresolved));
+    });
+
+    it('--quiet should suppress per-file lines', () => {
+      const dir = setupDir('fmt-quiet', ['0.png']);
+      const input = join(dir, '0.png');
+
+      const { stdout, exitCode } = run([input, '--quiet']);
+
+      assert.strictEqual(exitCode, 0);
+      // In quiet mode, no "OK", "SKIP", "FAIL" per-file lines
+      assert.ok(!stdout.includes('  OK '), 'Quiet should suppress OK lines');
+      assert.ok(!stdout.includes(' SKIP'), 'Quiet should suppress SKIP lines');
+      // Summary should still appear
+      assert.ok(stdout.includes('Converted'), 'Summary should still appear');
+    });
+
+    it('--verbose should include timing info', () => {
+      const dir = setupDir('fmt-verbose', ['0.png']);
+      const input = join(dir, '0.png');
+
+      const { stdout, exitCode } = run([input, '--verbose']);
+
+      assert.strictEqual(exitCode, 0);
+      assert.ok(
+        stdout.includes('ms]'),
+        'Verbose should include timing ([XXms])',
+      );
+    });
+  });
+
+  // =========================================================================
+  //  Flag validation
+  // =========================================================================
+
+  describe('flag validation', () => {
+    it('should warn when --auto used with --lossless', () => {
+      const dir = setupDir('flag-lossless', ['0.png']);
+      const input = join(dir, '0.png');
+
+      const { stderr, exitCode } = run([input, '--auto', '--lossless']);
+
+      assert.strictEqual(exitCode, 0);
+      assert.ok(
+        stderr.includes('--auto overrides --lossless'),
+        'Should warn that auto overrides lossless',
+      );
+    });
+
+    it('should warn when --auto used with explicit --quality', () => {
+      const dir = setupDir('flag-quality', ['0.png']);
+      const input = join(dir, '0.png');
+
+      const { stderr, exitCode } = run([input, '--auto', '--quality', '50']);
+
+      assert.strictEqual(exitCode, 0);
+      assert.ok(
+        stderr.includes('--quality is ignored'),
+        'Should warn that quality is ignored in auto mode',
       );
     });
   });
