@@ -168,7 +168,8 @@ async function main() {
     .option("--quiet", "Suppress per-file output, show summary only", config.quiet ?? false)
     .option("--lossless", "Enable lossless WebP compression", config.lossless ?? false)
     .option("--overwrite", "Allow overwriting existing WebP output files", config.overwrite ?? false)
-    .option("--auto", "Analyze each image and choose the best WebP settings automatically", config.auto ?? false);
+    .option("--auto", "Analyze each image and choose the best WebP settings automatically", config.auto ?? false)
+    .option("-r, --recursive", "Recursively scan directories", config.recursive ?? false);
 
   // ── scan command ──────────────────────────────────────────────────────────
 
@@ -177,7 +178,6 @@ async function main() {
     .description("Scan source code for local image references and convert them to WebP")
     .argument("<source...>", "One or more source files or directories")
     .option("-q, --quality <number>", "WebP quality (0-100)", String(config.quality ?? 80))
-    .option("-r, --recursive", "Recursively scan directories", config.recursive ?? false)
     .option("--dry-run", "Show what would be converted without writing any files", false)
     .option(
       "--source-ext <extensions>",
@@ -185,7 +185,7 @@ async function main() {
       config.sourceExt
     )
     .action(async (sources: string[], options) => {
-      const globalOpts = program.opts<{ lossless?: boolean; overwrite?: boolean; auto?: boolean }>();
+      const globalOpts = program.opts<{ lossless?: boolean; overwrite?: boolean; auto?: boolean; recursive?: boolean }>();
       const quality = parseQuality(options.quality);
       const auto = globalOpts.auto === true;
       validateFlags(auto, globalOpts.lossless === true, quality, config.quality ?? 80);
@@ -203,12 +203,12 @@ async function main() {
 
       if (!outOpts.quiet && !outOpts.json) {
         console.log(`Scanning ${sources.length} source input(s)...`);
-        if (options.recursive) console.log("Recursive mode enabled");
+        if (globalOpts.recursive) console.log("Recursive mode enabled");
         if (dryRun) console.log("Dry-run mode: no files will be written");
       }
 
       const scan = await scanSourceCodeForImages(sources, {
-        recursive: options.recursive,
+        recursive: globalOpts.recursive === true,
         sourceExtensions,
         onProgress: (outOpts.quiet || outOpts.json)
           ? undefined
@@ -315,9 +315,8 @@ async function main() {
     .argument("<input...>", "One or more input files or directories")
     .option("-o, --out-dir <dir>", "Output directory", config.outDir)
     .option("-q, --quality <number>", "WebP quality (0-100)", String(config.quality ?? 80))
-    .option("-r, --recursive", "Recursively scan directories", config.recursive ?? false)
     .action(async (inputs: string[], options) => {
-      const globalOpts = program.opts<{ lossless?: boolean; overwrite?: boolean; auto?: boolean }>();
+      const globalOpts = program.opts<{ lossless?: boolean; overwrite?: boolean; auto?: boolean; recursive?: boolean }>();
       const quality = parseQuality(options.quality);
       const auto = globalOpts.auto === true;
       validateFlags(auto, globalOpts.lossless === true, quality, config.quality ?? 80);
@@ -326,7 +325,7 @@ async function main() {
 
       if (!outOpts.quiet && !outOpts.json) {
         console.log(`Converting ${inputs.length} input(s)...`);
-        if (options.recursive) console.log("Recursive mode enabled");
+        if (globalOpts.recursive) console.log("Recursive mode enabled");
       }
 
       const startedAt = outOpts.verbose ? performance.now() : undefined;
@@ -335,7 +334,7 @@ async function main() {
         outDir: options.outDir,
         quality,
         lossless: globalOpts.lossless === true,
-        recursive: options.recursive,
+        recursive: globalOpts.recursive === true,
         overwrite: globalOpts.overwrite === true,
         auto,
         onProgress: (outOpts.quiet || outOpts.json)
