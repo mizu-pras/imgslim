@@ -1,6 +1,6 @@
 {
   "name": "imgslim",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "CLI tool to convert images to WebP format",
   "bin": {
     "imgslim": "./dist/cli.js"
@@ -17,7 +17,15 @@
     "start": "node dist/cli.js",
     "test": "node test/imgslim.test.mjs"
   },
-  "keywords": ["image", "webp", "optimizer", "cli", "sharp", "compress", "convert"],
+  "keywords": [
+    "image",
+    "webp",
+    "optimizer",
+    "cli",
+    "sharp",
+    "compress",
+    "convert"
+  ],
   "repository": {
     "type": "git",
     "url": "git+https://github.com/mizu-pras/imgslim.git"
