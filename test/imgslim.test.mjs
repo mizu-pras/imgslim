@@ -11,6 +11,7 @@ import {
   mkdirSync,
   rmSync,
   statSync,
+  symlinkSync,
   writeFileSync,
 } from 'node:fs';
 import { join, dirname } from 'node:path';
@@ -35,10 +36,10 @@ const TMP_ROOT = join(__dirname, 'test', 'tmp');
  * On success: { stdout, stderr: '', exitCode: 0 }
  * On failure: { stdout, stderr, exitCode: number }
  */
-function run(args) {
+function run(args, cwd = ROOT) {
   const result = spawnSync('node', [CLI, ...args], {
     encoding: 'utf8',
-    cwd: ROOT,
+    cwd,
     stdio: 'pipe',
   });
   return {
@@ -493,5 +494,94 @@ describe('imgslim CLI', () => {
         'Should report error for invalid quality value',
       );
     });
+    });
+
+    it('scan --auto should convert referenced images', () => {
+      const dir = setupDir('flag-scan-auto', ['jackpot.png']);
+      writeFileSync(join(dir, 'index.html'), '<img src="jackpot.png">');
+
+      const { stdout, exitCode } = run(['scan', dir, '--auto']);
+
+      assert.strictEqual(exitCode, 0);
+      assert.ok(
+        existsSync(join(dir, 'jackpot.webp')),
+        '--auto in scan mode should create webp',
+      );
+      assert.ok(stdout.includes('OK'), 'Should report OK');
+    });
+
+    it('scan --lossless should convert referenced images', () => {
+      const dir = setupDir('flag-scan-lossless', ['jackpot.png']);
+      writeFileSync(join(dir, 'index.html'), '<img src="jackpot.png">');
+
+      const { stdout, exitCode } = run(['scan', dir, '--lossless']);
+
+      assert.strictEqual(exitCode, 0);
+      const exists = existsSync(join(dir, 'jackpot.webp'));
+      if (exists) {
+        assert.ok(stdout.includes('OK'), 'Lossless scan should report OK');
+      } else {
+        assert.ok(stdout.includes('SKIP'), 'Lossless scan may skip if not smaller');
+      }
+    });
+
+    it('scan --overwrite should replace existing webp', () => {
+      const dir = setupDir('flag-scan-ow', ['jackpot.png']);
+      writeFileSync(join(dir, 'index.html'), '<img src="jackpot.png">');
+
+      // First scan — creates webp
+      run(['scan', dir, '--overwrite']);
+      assert.ok(existsSync(join(dir, 'jackpot.webp')), 'First scan should create webp');
+
+      // Second scan with --overwrite — should not skip
+      const { stdout, exitCode } = run(['scan', dir, '--overwrite']);
+      assert.strictEqual(exitCode, 0);
+      assert.ok(stdout.includes('OK'), 'Should OK when overwriting');
+      assert.ok(!stdout.includes('SKIP'), 'Should not skip with --overwrite');
+    });
+
+    it('--quiet scan should suppress all per-file output', () => {
+      const dir = setupDir('quiet-scan', ['jackpot.png']);
+      writeFileSync(join(dir, 'index.html'), '<img src="jackpot.png">');
+
+      const { stdout, exitCode } = run(['--quiet', 'scan', dir]);
+
+      assert.strictEqual(exitCode, 0);
+      assert.ok(!stdout.includes('SKIP'), 'Quiet scan should suppress SKIP');
+      assert.ok(!stdout.includes('MISS'), 'Quiet scan should suppress MISS');
+      assert.ok(!stdout.includes('  OK '), 'Quiet scan should suppress per-file OK');
+      // Summary should still appear
+      assert.ok(stdout.includes('Source files'), 'Summary should appear');
+    });
+
+    it('should handle symlink directory cycles without crashing', () => {
+      const dir = setupDir('symlink', ['0.png']);
+      const subA = join(dir, 'a');
+      const subB = join(dir, 'b');
+      mkdirSync(subA, { recursive: true });
+      mkdirSync(subB, { recursive: true });
+      cpSync(join(TEST_IMAGES, '1.png'), join(subA, '1.png'));
+
+      // Create cycle: a/link -> b, b/link -> a
+      symlinkSync(subB, join(subA, 'link'));
+      symlinkSync(subA, join(subB, 'link'));
+
+      const { exitCode, stdout } = run([dir, '--recursive']);
+      assert.strictEqual(exitCode, 0, 'Symlink cycle should not crash');
+      assert.ok(existsSync(join(dir, '0.webp')), 'Root image converted');
+      assert.ok(existsSync(join(subA, '1.webp')), 'Nested image converted');
+    });
+
+    it('should warn on malformed .imgslimrc', () => {
+      const dir = setupDir('badconfig', ['0.png']);
+      writeFileSync(join(dir, '.imgslimrc'), '{ bad json!!!');
+
+      const { stderr, exitCode } = run(['--json', join(dir, '0.png')], dir);
+
+      assert.strictEqual(exitCode, 0);
+      assert.ok(
+        stderr.includes('parse error') || stderr.includes('imgslimrc'),
+        'Should warn about malformed config',
+      );
+    });
   });
-});

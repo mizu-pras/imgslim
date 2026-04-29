@@ -81,7 +81,7 @@ function buildJsonOutput(stats: OptimizerStats, scan?: SourceScanResult, extra?:
     summary: {
       converted: stats.converted.length,
       skipped: stats.skipped.length + stats.autoSkipped.length,
-      failed: stats.failed.length,
+      failed: stats.failed.length + (scan?.failed.length ?? 0),
       bytesSaved: stats.totalBytesSaved,
       percentSaved: totalInput > 0
         ? `${((stats.totalBytesSaved / totalInput) * 100).toFixed(1)}%`
@@ -162,10 +162,13 @@ async function main() {
   program
     .name("imgslim")
     .description("ImgSlim converts and optimizes images")
-    // Global output options (available to all commands including subcommands)
+    // Global options (Commander v12 workaround: boolean flags must be on program, not subcommands)
     .option("--json", "Output results as JSON (for CI/CD pipelines)", config.json ?? false)
     .option("--verbose", "Show extra detail including timing", config.verbose ?? false)
-    .option("--quiet", "Suppress per-file output, show summary only", config.quiet ?? false);
+    .option("--quiet", "Suppress per-file output, show summary only", config.quiet ?? false)
+    .option("--lossless", "Enable lossless WebP compression", config.lossless ?? false)
+    .option("--overwrite", "Allow overwriting existing WebP output files", config.overwrite ?? false)
+    .option("--auto", "Analyze each image and choose the best WebP settings automatically", config.auto ?? false);
 
   // ── scan command ──────────────────────────────────────────────────────────
 
@@ -175,9 +178,6 @@ async function main() {
     .argument("<source...>", "One or more source files or directories")
     .option("-q, --quality <number>", "WebP quality (0-100)", String(config.quality ?? 80))
     .option("-r, --recursive", "Recursively scan directories", config.recursive ?? false)
-    .option("--lossless", "Enable lossless WebP compression", config.lossless ?? false)
-    .option("--overwrite", "Allow overwriting existing WebP output files", config.overwrite ?? false)
-    .option("--auto", "Analyze each image and choose the best WebP settings automatically", config.auto ?? false)
     .option("--dry-run", "Show what would be converted without writing any files", false)
     .option(
       "--source-ext <extensions>",
@@ -185,9 +185,10 @@ async function main() {
       config.sourceExt
     )
     .action(async (sources: string[], options) => {
+      const globalOpts = program.opts<{ lossless?: boolean; overwrite?: boolean; auto?: boolean }>();
       const quality = parseQuality(options.quality);
-      const auto = options.auto === true;
-      validateFlags(auto, options.lossless, quality, config.quality ?? 80);
+      const auto = globalOpts.auto === true;
+      validateFlags(auto, globalOpts.lossless === true, quality, config.quality ?? 80);
 
       const outOpts = getOutputOptions(program);
 
@@ -200,7 +201,7 @@ async function main() {
 
       const dryRun = options.dryRun === true;
 
-      if (!outOpts.json) {
+      if (!outOpts.quiet && !outOpts.json) {
         console.log(`Scanning ${sources.length} source input(s)...`);
         if (options.recursive) console.log("Recursive mode enabled");
         if (dryRun) console.log("Dry-run mode: no files will be written");
@@ -209,14 +210,14 @@ async function main() {
       const scan = await scanSourceCodeForImages(sources, {
         recursive: options.recursive,
         sourceExtensions,
-        onProgress: outOpts.json
+        onProgress: (outOpts.quiet || outOpts.json)
           ? undefined
           : (file, current, total) => {
               process.stderr.write(`\r  Scanning [${current}/${total}] ${file}`);
             },
       });
 
-      if (!outOpts.json) {
+      if (!outOpts.quiet && !outOpts.json) {
         process.stderr.write("\r" + " ".repeat(80) + "\r");
         console.log(`Found ${scan.images.length} referenced local image(s) in ${scan.sourceFiles} source file(s).`);
       }
@@ -244,6 +245,7 @@ async function main() {
             console.log(`  ${img} -> ${out}`);
           }
         }
+        if (!outOpts.quiet && !outOpts.json) {
         for (const img of nonConvertibleImages) {
           console.log(`  SKIP ${img}: already WebP or unsupported for WebP conversion`);
         }
@@ -252,6 +254,7 @@ async function main() {
         }
         for (const fail of scan.failed) {
           process.stderr.write(`  FAIL ${fail.path}: ${fail.error}\n`);
+        }
         }
         printScanSummary(
           { converted: [], skipped: [], autoSkipped: [], failed: [], totalBytesSaved: 0 },
@@ -268,11 +271,11 @@ async function main() {
       const stats = await optimize(convertibleImages, {
         outDir: undefined,
         quality,
-        lossless: options.lossless,
+        lossless: globalOpts.lossless === true,
         recursive: false,
-        overwrite: options.overwrite,
+        overwrite: globalOpts.overwrite === true,
         auto,
-        onProgress: outOpts.json
+        onProgress: (outOpts.quiet || outOpts.json)
           ? undefined
           : (file, current, total) => {
               process.stderr.write(`\r  Converting [${current}/${total}] ${file}`);
@@ -287,6 +290,7 @@ async function main() {
 
       printResults(stats, outOpts, startedAt);
 
+      if (!outOpts.quiet && !outOpts.json) {
       for (const image of nonConvertibleImages) {
         console.log(` SKIP ${image}: already WebP or unsupported for WebP conversion`);
       }
@@ -297,6 +301,7 @@ async function main() {
 
       for (const fail of [...scan.failed, ...stats.failed]) {
         process.stderr.write(` FAIL ${fail.path}: ${fail.error}\n`);
+      }
       }
 
       printScanSummary(stats, scan, convertibleImages.length, nonConvertibleImages.length);
@@ -311,17 +316,15 @@ async function main() {
     .option("-o, --out-dir <dir>", "Output directory", config.outDir)
     .option("-q, --quality <number>", "WebP quality (0-100)", String(config.quality ?? 80))
     .option("-r, --recursive", "Recursively scan directories", config.recursive ?? false)
-    .option("--lossless", "Enable lossless WebP compression", config.lossless ?? false)
-    .option("--overwrite", "Allow overwriting existing output files", config.overwrite ?? false)
-    .option("--auto", "Analyze each image and choose the best WebP settings automatically", config.auto ?? false)
     .action(async (inputs: string[], options) => {
+      const globalOpts = program.opts<{ lossless?: boolean; overwrite?: boolean; auto?: boolean }>();
       const quality = parseQuality(options.quality);
-      const auto = options.auto === true;
-      validateFlags(auto, options.lossless, quality, config.quality ?? 80);
+      const auto = globalOpts.auto === true;
+      validateFlags(auto, globalOpts.lossless === true, quality, config.quality ?? 80);
 
       const outOpts = getOutputOptions(program);
 
-      if (!outOpts.json) {
+      if (!outOpts.quiet && !outOpts.json) {
         console.log(`Converting ${inputs.length} input(s)...`);
         if (options.recursive) console.log("Recursive mode enabled");
       }
@@ -331,11 +334,11 @@ async function main() {
       const stats = await optimize(inputs, {
         outDir: options.outDir,
         quality,
-        lossless: options.lossless,
+        lossless: globalOpts.lossless === true,
         recursive: options.recursive,
-        overwrite: options.overwrite,
+        overwrite: globalOpts.overwrite === true,
         auto,
-        onProgress: outOpts.json
+        onProgress: (outOpts.quiet || outOpts.json)
           ? undefined
           : (file, current, total) => {
               process.stderr.write(`\r  Converting [${current}/${total}] ${file}`);

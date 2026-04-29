@@ -1,4 +1,4 @@
-import { existsSync, readdirSync, statSync } from "node:fs";
+import { existsSync, readdirSync, statSync, realpathSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { dirname, extname, isAbsolute, join, resolve } from "node:path";
 
@@ -61,8 +61,23 @@ function isSourceFile(filePath: string, extensions: Set<string>): boolean {
   return extensions.has(extname(filePath).toLowerCase());
 }
 
-function collectSourceFiles(inputPath: string, options: ScanOptions, extensions: Set<string>): string[] {
+function collectSourceFiles(
+  inputPath: string,
+  options: ScanOptions,
+  extensions: Set<string>,
+  visited: Set<string> = new Set()
+): string[] {
   const stats = statSync(inputPath);
+
+  // Detect symlink cycles using real path
+  let realPath: string;
+  try {
+    realPath = realpathSync(inputPath);
+  } catch {
+    return []; // broken symlink — skip silently
+  }
+  if (visited.has(realPath)) return [];
+  visited.add(realPath);
 
   if (stats.isFile()) {
     return isSourceFile(inputPath, extensions) ? [inputPath] : [];
@@ -76,18 +91,18 @@ function collectSourceFiles(inputPath: string, options: ScanOptions, extensions:
   const entries = readdirSync(inputPath, { withFileTypes: true });
 
   for (const entry of entries) {
-    if (entry.isDirectory() && IGNORED_DIRS.has(entry.name)) {
-      continue;
-    }
-
     const fullPath = join(inputPath, entry.name);
 
     // Resolve symlinks: stat the entry to find the real file/dir type
-    const resolvedStats = entry.isSymbolicLink() ? statSync(fullPath) : null;
+    let resolvedStats: ReturnType<typeof statSync> | null;
+    try {
+      resolvedStats = entry.isSymbolicLink() ? statSync(fullPath) : null;
+    } catch {
+      continue; // broken symlink — skip
+    }
     const isDir = resolvedStats ? resolvedStats.isDirectory() : entry.isDirectory();
     const isFile = resolvedStats ? resolvedStats.isFile() : entry.isFile();
 
-    // Skip symlinked directories in ignored list
     if (isDir && IGNORED_DIRS.has(entry.name)) {
       continue;
     }
@@ -95,7 +110,7 @@ function collectSourceFiles(inputPath: string, options: ScanOptions, extensions:
     if (isFile && isSourceFile(fullPath, extensions)) {
       files.push(fullPath);
     } else if (isDir && options.recursive) {
-      files.push(...collectSourceFiles(fullPath, options, extensions));
+      files.push(...collectSourceFiles(fullPath, options, extensions, visited));
     }
   }
 

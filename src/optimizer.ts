@@ -1,7 +1,8 @@
-import { readdirSync, statSync, existsSync, mkdirSync } from "node:fs";
+import { readdirSync, statSync, existsSync, mkdirSync, realpathSync } from "node:fs";
 import { stat, mkdir, writeFile, rename } from "node:fs/promises";
 import { join, extname, basename, dirname } from "node:path";
 import sharp from "sharp";
+import { randomBytes } from "node:crypto";
 
 export const SUPPORTED_EXTENSIONS = new Set([".png", ".jpg", ".jpeg", ".svg"]);
 
@@ -42,12 +43,23 @@ export function isImageFile(filePath: string): boolean {
 
 function findImageFiles(
   inputPath: string,
-  recursive: boolean
+  recursive: boolean,
+  visited: Set<string> = new Set()
 ): string[] {
   const results: string[] = [];
 
   try {
     const stats = statSync(inputPath);
+
+    // Detect symlink cycles using real path
+    let realPath: string;
+    try {
+      realPath = realpathSync(inputPath);
+    } catch {
+      return results; // broken symlink — skip silently
+    }
+    if (visited.has(realPath)) return results;
+    visited.add(realPath);
 
     if (stats.isFile()) {
       if (isImageFile(inputPath)) {
@@ -59,14 +71,19 @@ function findImageFiles(
         const fullPath = join(inputPath, entry.name);
 
         // Resolve symlinks to determine real file/dir type
-        const resolvedStats = entry.isSymbolicLink() ? statSync(fullPath) : null;
+        let resolvedStats: ReturnType<typeof statSync> | null;
+        try {
+          resolvedStats = entry.isSymbolicLink() ? statSync(fullPath) : null;
+        } catch {
+          continue; // broken symlink — skip
+        }
         const isDir = resolvedStats ? resolvedStats.isDirectory() : entry.isDirectory();
         const isFile = resolvedStats ? resolvedStats.isFile() : entry.isFile();
 
         if (isFile && isImageFile(fullPath)) {
           results.push(fullPath);
         } else if (isDir && recursive) {
-          results.push(...findImageFiles(fullPath, recursive));
+          results.push(...findImageFiles(fullPath, recursive, visited));
         }
       }
     }
@@ -93,10 +110,14 @@ function resolveOutputPath(
   return join(dirname(inputPath), webpName);
 }
 
+function tmpPathFor(outputPath: string): string {
+  return `${outputPath}.${randomBytes(4).toString("hex")}.tmp`;
+}
+
 async function atomicWriteFile(outputPath: string, data: Buffer): Promise<void> {
-  const tmpPath = outputPath + ".tmp";
-  await writeFile(tmpPath, data);
-  await rename(tmpPath, outputPath);
+  const tmp = tmpPathFor(outputPath);
+  await writeFile(tmp, data);
+  await rename(tmp, outputPath);
 }
 
 async function atomicSharpToFile(
@@ -104,9 +125,9 @@ async function atomicSharpToFile(
   webpOptions: sharp.WebpOptions,
   outputPath: string
 ): Promise<void> {
-  const tmpPath = outputPath + ".tmp";
-  await sharp(inputPath).webp(webpOptions).toFile(tmpPath);
-  await rename(tmpPath, outputPath);
+  const tmp = tmpPathFor(outputPath);
+  await sharp(inputPath).webp(webpOptions).toFile(tmp);
+  await rename(tmp, outputPath);
 }
 
 async function analyzeAndConvert(
@@ -137,19 +158,20 @@ async function analyzeAndConvert(
     return;
   }
 
-  // Lossy mode: test candidate qualities [90, 80, 70, 60] in parallel
+  // Lossy mode: test candidate qualities [90, 80, 70, 60] with limited concurrency
   const qualities = [90, 80, 70, 60];
-  const candidatePromises = qualities.map(async (q) => {
+  const candidates: { quality: number; buffer: Buffer; size: number }[] = [];
+  await processPool(qualities, 2, async (q) => {
     try {
       const buf = await sharp(inputPath).webp({ quality: q }).toBuffer();
-      return { quality: q, buffer: buf, size: buf.length } as const;
+      candidates.push({ quality: q, buffer: buf, size: buf.length });
     } catch {
-      return null; // individual quality failure shouldn't abort the rest
+      // individual quality failure shouldn't abort the rest
     }
   });
-  const candidates = (await Promise.all(candidatePromises)).filter(
-    (c): c is NonNullable<typeof c> => c !== null
-  );
+
+  // Sort by quality descending for deterministic selection
+  candidates.sort((a, b) => b.quality - a.quality);
 
   // Select highest quality with at least 10% size reduction
   for (const c of candidates) {
