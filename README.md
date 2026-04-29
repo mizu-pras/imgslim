@@ -463,3 +463,30 @@ Run tests:
 ```bash
 node test/imgslim.test.mjs
 ```
+
+## Publishing
+
+### Manual
+
+```bash
+# 1. Bump version
+npm version patch   # 1.0.0 → 1.0.1
+# npm version minor # 1.0.0 → 1.1.0
+# npm version major # 1.0.0 → 2.0.0
+
+# 2. Publish to npm
+npm publish --access public
+```
+
+### Automated (GitHub Actions)
+
+1. Go to your npm account → **Access Tokens** → generate a **Granular Access Token** (or Classic) with publish permission.
+2. In your GitHub repo: **Settings → Secrets and variables → Actions** → add `NPM_TOKEN` with the token value.
+3. Create a [GitHub Release](https://github.com/mizu-pras/imgslim/releases/new) — the workflow builds, tests, and publishes automatically.
+
+### Install from npm
+
+```bash
+npm install -g imgslim
+imgslim --help
+```

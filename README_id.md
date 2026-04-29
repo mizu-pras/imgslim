@@ -463,3 +463,30 @@ Jalankan pengujian:
 ```bash
 node test/imgslim.test.mjs
 ```
+
+## Publikasi
+
+### Manual
+
+```bash
+# 1. Naikkan versi
+npm version patch   # 1.0.0 → 1.0.1
+# npm version minor # 1.0.0 → 1.1.0
+# npm version major # 1.0.0 → 2.0.0
+
+# 2. Publikasi ke npm
+npm publish --access public
+```
+
+### Otomatis (GitHub Actions)
+
+1. Buka akun npm Anda → **Access Tokens** → buat **Granular Access Token** (atau Classic) dengan izin publish.
+2. Di repo GitHub: **Settings → Secrets and variables → Actions** → tambahkan `NPM_TOKEN` dengan nilai token.
+3. Buat [GitHub Release](https://github.com/mzaini30/imgslim/releases/new) — workflow akan build, test, dan publikasi secara otomatis.
+
+### Install dari npm
+
+```bash
+npm install -g imgslim
+imgslim --help
+```
