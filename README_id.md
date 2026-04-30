@@ -1,258 +1,218 @@
 # ImgSlim
 
-CLI tool untuk mengkonversi gambar ke format WebP menggunakan [sharp](https://sharp.pixelplumbing.com/).
+Konversi gambar ke WebP dari command line. File lebih kecil, kualitas tetap.
 
-Dua mode utama:
+Dua cara penggunaan:
 
-1. **Konversi langsung** — konversi file/folder gambar ke WebP.
-2. **Pemindaian source code** — pindai source code untuk referensi gambar lokal, lalu konversi gambar yang ditemukan ke WebP.
+1. **Konversi langsung** — arahkan ke gambar atau folder, dapatkan file `.webp`.
+2. **Pemindaian source code** — pindai kode untuk referensi gambar, konversi semua gambar yang ditemukan.
 
-> **Catatan:** ImgSlim tidak pernah menghapus file original. Mengkonversi `photo.png` menghasilkan `photo.webp` berdampingan dengan `photo.png` yang tetap ada.
+> ImgSlim tidak pernah menghapus atau memodifikasi file original. `photo.png` tetap ada — kamu dapat `photo.webp` di sebelahnya.
 
 ---
 
 ## Format yang Didukung
 
-Format input yang dapat dikonversi ke WebP:
+Mengkonversi format berikut ke WebP:
 
 - `.png`
-- `.jpg`
-- `.jpeg`
+- `.jpg` / `.jpeg`
 - `.svg`
 
-Output selalu `.webp`.
-
-> **Catatan SVG:** Sharp melakukan rasterisasi SVG ke PNG terlebih dahulu sebelum di-encode ke WebP. Hasilnya adalah bitmap `.webp` — skalabilitas vektor hilang. Pertimbangkan ini saat menggunakan `.svg` sebagai aset vektor murni.
+> **Tentang SVG:** Sharp melakukan rasterisasi SVG ke PNG terlebih dahulu, lalu di-encode ke WebP. Output-nya adalah bitmap — skalabilitas vektor hilang. Simpan SVG original jika kamu butuh rendering vektor murni.
 
 ---
 
 ## Instalasi
 
 ```bash
-npm install
-npm run build
+npm install -g imgslim
 ```
 
-Setelah build, binary tersedia di `dist/cli.js`. Jika dipasang sebagai package global, perintah `imgslim` tersedia langsung.
+Butuh Node.js 18 atau lebih baru.
 
-Menjalankan langsung dari repositori:
+Selesai. Perintah `imgslim` sekarang tersedia di mana saja:
 
 ```bash
-node dist/cli.js --help
+imgslim --help
 ```
 
 ---
 
 ## Mulai Cepat
 
-Konversi satu gambar:
+**Konversi gambar tertentu** — arahkan ke file atau folder, semua gambar yang didukung akan dikonversi:
 
 ```bash
-imgslim photo.png
+imgslim photo.jpg                    # satu file → photo.webp
+imgslim hero.png banner.jpg logo.svg # banyak file
+imgslim ./images --recursive         # semua gambar di folder (dan subfolder)
 ```
 
-Output:
-
-```txt
-photo.png -> photo.webp
-```
-
-Pindai source code dan konversi gambar yang direferensikan:
+**Pindai source code** — hanya mengkonversi gambar yang benar-benar direferensikan di kode:
 
 ```bash
 imgslim scan ./src --recursive
 ```
 
-Jika source code berisi:
-
-```html
-<img src="./assets/logo.png" />
-```
-
-ImgSlim membuat `./src/assets/logo.webp` tanpa menyentuh `./src/assets/logo.png`.
+Contoh: jika `./images/` berisi `logo.png`, `hero.jpg`, dan `draft.png` — tapi hanya `logo.png` dan `hero.jpg` yang muncul di HTML/CSS/JS — mode scan hanya mengkonversi dua itu. Mode langsung (`imgslim ./images`) mengkonversi ketiganya.
 
 ---
 
-## Mode 1: Konversi Langsung
+## Penggunaan
 
-Gunakan mode ini jika Anda sudah tahu file atau folder gambar mana yang ingin dikonversi.
+### Konversi Langsung
 
-### Satu File
-
-```bash
-imgslim photo.png
-```
-
-Output dibuat di folder yang sama: `photo.webp`
-
-### Banyak File
+Gunakan saat kamu sudah tahu gambar mana yang ingin dikonversi.
 
 ```bash
-imgslim image1.jpg image2.png banner.svg
+imgslim <file atau folder...>
 ```
 
-### Konversi Semua Gambar dalam Folder
+**Satu file**
 
-Non-rekursif (hanya level atas):
+```bash
+imgslim photo.jpg
+```
+
+**Banyak file**
+
+```bash
+imgslim a.jpg b.png c.svg
+```
+
+**Folder (hanya level atas)**
 
 ```bash
 imgslim ./images
 ```
 
-Rekursif (termasuk subdirektori):
+**Folder (rekursif)**
 
 ```bash
 imgslim ./images --recursive
-# atau
 imgslim -r ./images
 ```
 
-### Folder Output Khusus
+**Output ke folder berbeda**
 
 ```bash
 imgslim photo.png --out-dir ./webp
-# atau
 imgslim -o ./webp photo.png
 ```
 
 Hasil: `./webp/photo.webp`
 
-### Kualitas WebP
-
-Kualitas default adalah `80`. Rentang valid: `0`–`100`.
-
-```bash
-imgslim photo.png --quality 90
-# atau
-imgslim -q 90 photo.png
-```
-
-### WebP Lossless
-
-```bash
-imgslim photo.png --lossless
-```
-
-### Mode Otomatis
-
-Menguji beberapa pengaturan WebP dan memilih hasil yang optimal. Melewati file jika tidak ada kandidat WebP yang lebih kecil dari original.
-
-```bash
-imgslim photo.png --auto
-```
-
-> **Catatan:** Menggunakan `--auto` bersama `--lossless` atau `--quality` eksplisit akan memicu peringatan — mode otomatis menggunakan strategi pemilihan kualitasnya sendiri.
-
-### Timpa WebP yang Sudah Ada
-
-Secara default, file output `.webp` yang sudah ada dilewati. Gunakan `--overwrite` untuk menggantinya:
-
-```bash
-imgslim photo.png --overwrite
-```
-
-> `--overwrite` hanya mengganti output `.webp`. File original (`.png`, `.jpg`, dll.) tidak pernah disentuh.
-
 ---
 
-## Mode 2: Pemindaian Source Code
+### Pemindaian Source Code
 
-Pindai source code untuk menemukan referensi gambar lokal, lalu konversi gambar yang ditemukan ke WebP.
+Pindai source code untuk referensi gambar lokal, lalu konversi gambar yang ditemukan.
 
 ```bash
-imgslim scan <source...>
+imgslim scan <file atau folder source...>
 ```
 
-Contoh:
+**Contoh**
 
 ```bash
 imgslim scan ./src --recursive
 ```
 
-### Cara Kerja
+**Cara kerja**
 
-1. Membaca file source code.
-2. Menemukan referensi gambar lokal (mis. `./logo.png`, `../assets/photo.jpg`, `url("./bg.png")`).
-3. Menyelesaikan referensi ke file aktual di disk.
-4. Mengkonversi gambar yang ditemukan ke `.webp` di lokasi yang sama.
-5. Melaporkan item yang dikonversi, dilewati, tidak terselesaikan, dan gagal.
+1. Membaca file source (HTML, CSS, JS, TS, dll.)
+2. Menemukan referensi gambar lokal (mis. `"./logo.png"`, `url("../bg.jpg")`, `![Alt](./img.png)`)
+3. Menyelesaikan referensi ke file aktual
+4. Mengkonversi setiap gambar yang ditemukan ke `.webp` di sebelah original
+5. Melaporkan hasilnya
 
-### Pola Referensi yang Terdeteksi
-
-**HTML:**
+**Pola referensi yang didukung**
 
 ```html
+<!-- HTML -->
 <img src="./assets/logo.png" />
 ```
 
-**CSS:**
-
 ```css
-.hero {
-  background-image: url("../images/hero.jpg");
-}
+/* CSS */
+.hero { background-image: url("../images/hero.jpg"); }
 ```
 
-**JavaScript / TypeScript:**
-
 ```ts
+// JavaScript / TypeScript
 import logo from "./assets/logo.png";
 const image = "../images/banner.jpg";
 ```
 
-**Markdown / MDX:**
-
 ```md
+<!-- Markdown / MDX -->
 ![Logo](./assets/logo.png)
 ```
 
-### Ekstensi Source Default
+**Yang diabaikan**
+- URL remote (`https://...`)
+- Data URI (`data:...`)
+- Ekspresi dinamis (`` `./img${n}.png` ``)
 
-Pemindaian membaca file dengan ekstensi berikut secara default:
+**Ekstensi file source default**
 
 `.html` `.htm` `.css` `.scss` `.sass` `.less` `.js` `.jsx` `.ts` `.tsx` `.vue` `.svelte` `.astro` `.md` `.mdx`
 
-### Opsi Scan
+**Opsi khusus scan**
 
 | Opsi | Deskripsi |
 |---|---|
-| `<source...>` | Satu atau lebih file/folder source code |
-| `-q, --quality <number>` | Kualitas WebP `0`–`100` (default: `80`) |
-| `-r, --recursive` | Pindai direktori secara rekursif |
-| `--lossless` | Gunakan kompresi WebP lossless |
-| `--overwrite` | Ganti file output `.webp` yang sudah ada |
-| `--auto` | Pilih otomatis pengaturan WebP optimal |
 | `--dry-run` | Pratinjau apa yang akan dikonversi tanpa menulis file |
-| `--source-ext <exts>` | Ekstensi source yang dipindai, dipisah koma (mis. `ts,tsx,css`) |
-| `--json` | Output hasil sebagai JSON terstruktur |
-| `--verbose` | Tampilkan detail waktu per file |
-| `--quiet` | Hanya tampilkan ringkasan, sembunyikan output per file |
+| `--source-ext <exts>` | Hanya pindai ekstensi tertentu (mis. `ts,tsx,css`) |
 
-### Dry Run
+---
 
-Pratinjau gambar mana yang akan dikonversi tanpa benar-benar menulis file:
+### Opsi Bersama
+
+Semua opsi berfungsi di kedua mode. Mode scan juga mendukung `--dry-run` dan `--source-ext` khusus.
+
+**Kualitas** (default: `80`)
 
 ```bash
-imgslim scan ./src --recursive --dry-run
+imgslim photo.jpg --quality 90
+imgslim -q 90 photo.jpg
 ```
 
-### Filter Berdasarkan Ekstensi Source
+**Lossless**
 
 ```bash
-imgslim scan ./src --recursive --source-ext ts,tsx,css
+imgslim photo.png --lossless
 ```
 
-### Mode Otomatis dengan Scan
+**Mode otomatis** — menguji beberapa pengaturan, memilih hasil terbaik. Melewati file jika WebP tidak lebih kecil.
 
 ```bash
-imgslim scan ./src --recursive --auto
+imgslim photo.png --auto
+```
+
+> Menggabungkan `--auto` dengan `--quality` atau `--lossless` akan memunculkan peringatan — mode otomatis memilih pengaturannya sendiri.
+
+**Overwrite** — ganti file `.webp` yang sudah ada. Secara default, output yang sudah ada dilewati.
+
+```bash
+imgslim photo.png --overwrite
+```
+
+> `--overwrite` hanya mempengaruhi output `.webp`. File original tidak pernah disentuh.
+
+**Rekursif** — pindai folder secara rekursif.
+
+```bash
+imgslim ./images --recursive
+imgslim scan ./src --recursive
 ```
 
 ---
 
 ## Output CLI
 
-### Status Per File
+### Status per file
 
 ```
   OK  src/assets/logo.png -> src/assets/logo.webp  (42.1%, 18.4 KB) [q90]
@@ -260,12 +220,14 @@ imgslim scan ./src --recursive --auto
 
 | Status | Arti |
 |---|---|
-| `OK` | Berhasil dikonversi ke WebP |
-| `SKIP` | Dilewati — output sudah ada, atau mode otomatis tidak menemukan kandidat yang lebih kecil |
-| `MISS` | Gambar direferensikan di source tapi tidak ditemukan di disk |
-| `FAIL` | Error saat membaca atau mengkonversi file |
+| `OK` | Berhasil dikonversi |
+| `SKIP` | Dilewati — output sudah ada, atau mode otomatis tidak menemukan manfaat |
+| `MISS` | Gambar direferensikan di source tapi file tidak ditemukan |
+| `FAIL` | Error saat membaca atau mengkonversi |
 
 ### Ringkasan
+
+Setelah konversi, kamu mendapat ringkasan:
 
 ```
 ──────────────────────────────────────────
@@ -280,13 +242,29 @@ imgslim scan ./src --recursive --auto
 ──────────────────────────────────────────
 ```
 
----
+### Mode quiet
 
-## Format Output
+Sembunyikan output per file, tampilkan ringkasan saja:
 
-### Output JSON (CI/CD)
+```bash
+imgslim ./images --recursive --quiet
+```
 
-Gunakan `--json` untuk output yang dapat dibaca mesin. Mencetak objek JSON terstruktur ke stdout (progress dan peringatan ke stderr).
+### Mode verbose
+
+Tampilkan waktu untuk setiap file:
+
+```bash
+imgslim ./images --verbose
+```
+
+```
+  OK  images/hero.png -> images/hero.webp  (74.4%, 35.0 KB) [128ms]
+```
+
+### Output JSON
+
+Format terbaca mesin untuk skrip dan CI/CD:
 
 ```bash
 imgslim ./images --recursive --json
@@ -316,11 +294,7 @@ imgslim ./images --recursive --json
 }
 ```
 
-Mode scan menambahkan field `scan`:
-
-```bash
-imgslim scan ./src --recursive --json
-```
+Mode scan menambahkan detail scan:
 
 ```json
 {
@@ -335,51 +309,33 @@ imgslim scan ./src --recursive --json
 }
 ```
 
-### Mode Verbose
-
-Menambahkan informasi waktu per file:
-
-```bash
-imgslim ./images --verbose
-```
-
-```
-  OK  images/hero.png -> images/hero.webp  (74.4%, 35.0 KB) [128ms]
-```
-
-### Mode Quiet
-
-Menyembunyikan output per file, hanya menampilkan ringkasan:
-
-```bash
-imgslim ./images --recursive --quiet
-```
+> Output JSON ke stdout. Progress dan peringatan ke stderr — aman untuk pipe: `imgslim ... --json > report.json`
 
 ---
 
 ## File Konfigurasi
 
-ImgSlim mendukung file konfigurasi JSON `.imgslimrc` opsional. Dimuat dari dua lokasi (digabung — lokal menimpa home):
+Buat file `.imgslimrc` untuk mengatur default. Letakkan di:
 
-1. `~/.imgslimrc` (direktori home — default global)
-2. `./.imgslimrc` (direktori saat ini — default proyek)
+1. `~/.imgslimrc` — default global (berlaku di mana saja)
+2. `./.imgslimrc` — default proyek (menimpa global)
 
 Flag CLI selalu menimpa nilai konfigurasi.
 
-### Contoh `.imgslimrc`
+**Contoh**
 
 ```json
 {
   "quality": 85,
   "auto": true,
-  "overwrite": false,
   "recursive": true,
   "sourceExt": "ts,tsx,css,html",
   "verbose": false,
-  "json": false,
   "quiet": false
 }
 ```
+
+**Semua kunci yang tersedia**
 
 | Kunci | Tipe | Deskripsi |
 |---|---|---|
@@ -390,52 +346,39 @@ Flag CLI selalu menimpa nilai konfigurasi.
 | `overwrite` | boolean | Selalu timpa `.webp` yang sudah ada |
 | `auto` | boolean | Selalu gunakan mode otomatis |
 | `sourceExt` | string | Ekstensi source default (dipisah koma) |
-| `verbose` | boolean | Selalu tampilkan detail waktu |
-| `quiet` | boolean | Selalu sembunyikan output per file |
+| `verbose` | boolean | Selalu tampilkan waktu per file |
+| `quiet` | boolean | Selalu tampilkan ringkasan saja |
 | `json` | boolean | Selalu output JSON |
-
----
-
-## Perilaku Penting
-
-- ImgSlim membuat file `.webp` berdampingan dengan original — file original **tidak pernah** dihapus atau dimodifikasi.
-- File source code **tidak pernah** dimodifikasi. Mode scan hanya membacanya untuk menemukan referensi gambar.
-- Mode scan hanya mendeteksi referensi gambar lokal yang ditulis sebagai string literal / path biasa. Ekspresi dinamis (mis. `` `./img${n}.png` ``) tidak terdeteksi.
-- URL remote (`https://...`) dan data URI (`data:...`) diabaikan.
-- Direktori umum dikecualikan saat pemindaian source: `node_modules`, `.git`, `dist`, `build`, `coverage`, `.next`, `.nuxt`.
-- Jika output `.webp` sudah ada, gunakan `--overwrite` untuk membuat ulang.
-- Penulisan atomik: file ditulis ke path sementara lalu di-rename — tidak ada risiko output korup saat crash.
 
 ---
 
 ## Workflow Umum
 
-### Proyek Web / Frontend
+**Proyek frontend — pindai dan konversi semua gambar**
 
 ```bash
-npm run build
 imgslim scan ./src ./public --recursive --auto
 ```
 
-### Hanya Direktori Aset
+**Konversi folder aset**
 
 ```bash
 imgslim ./assets --recursive --auto
 ```
 
-### Konversi Kualitas Tinggi
+**Konversi kualitas tinggi**
 
 ```bash
 imgslim ./images --recursive --quality 90
 ```
 
-### Timpa Paksa
+**Regenerasi semua file WebP**
 
 ```bash
 imgslim ./images --recursive --overwrite
 ```
 
-### Pipeline CI/CD
+**Pipeline CI/CD**
 
 ```bash
 imgslim ./images --recursive --json --quiet > report.json
@@ -443,66 +386,18 @@ imgslim ./images --recursive --json --quiet > report.json
 
 ---
 
-## Pengembangan
+## Hal yang Perlu Diketahui
 
-Build TypeScript:
+- **File original tidak pernah dihapus atau dimodifikasi.** Hanya file `.webp` yang dibuat.
+- **File source code tidak pernah dimodifikasi.** Perintah scan hanya membacanya.
+- **Mode scan hanya mendeteksi referensi string biasa.** Ekspresi dinamis seperti `` `./img${n}.png` `` tidak ditemukan.
+- **URL remote** (`https://...`) dan **data URI** (`data:...`) diabaikan.
+- **Direktori yang dilewati** saat pemindaian source: `node_modules`, `.git`, `dist`, `build`, `coverage`, `.next`, `.nuxt`.
+- **Penulisan atomik.** File ditulis ke path sementara lalu di-rename — tidak ada risiko output korup jika proses crash.
+- **File `.webp` yang sudah ada dilewati** secara default. Gunakan `--overwrite` untuk membuat ulang.
 
-```bash
-npm run build
-```
+---
 
-Jalankan CLI secara lokal:
-
-```bash
-node dist/cli.js --help
-node dist/cli.js scan --help
-```
-
-Jalankan pengujian:
-
-```bash
-node test/imgslim.test.mjs
-```
-
-## Publikasi
-
-### Manual
-
-```bash
-# 1. Naikkan versi
-npm version patch   # 1.0.0 → 1.0.1
-# npm version minor # 1.0.0 → 1.1.0
-# npm version major # 1.0.0 → 2.0.0
-
-# 2. Publikasi ke npm
-npm publish --access public
-```
-
-### Otomatis (GitHub Actions + release-please)
-
-Commit ke `main` dipantau oleh [release-please](https://github.com/googleapis/release-please). Saat fitur atau perbaikan baru di-push, secara otomatis:
-
-1. Membuka **Release PR** dengan bump versi dan changelog yang di-generate otomatis.
-2. Saat di-merge, membuat **GitHub Release** dengan catatan rilis.
-3. Release memicu workflow **npm publish** — build, test, dan publikasi.
-
-**Setup satu kali:**
-
-1. Buat **Granular Access Token** npm (atau Classic) dengan izin publish di [npmjs.com](https://www.npmjs.com/settings/mizu-pras/tokens).
-2. Tambahkan ke repo GitHub: **Settings → Secrets and variables → Actions** → `NPM_TOKEN`.
-
-**Konvensi commit** (untuk changelog akurat):
-
-```bash
-feat: tambah flag --json              # → minor bump
-fix: symlink cycle bikin crash        # → patch bump
-feat!: hapus dukungan Node 16         # → major bump
-chore: update dependensi              # → tanpa bump
-```
-
-### Install dari npm
-
-```bash
-npm install -g imgslim
-imgslim --help
-```
+- [Changelog](CHANGELOG.md)
+- [paket npm](https://www.npmjs.com/package/imgslim)
+- [GitHub](https://github.com/mizu-pras/imgslim)
