@@ -1,6 +1,6 @@
 {
   "name": "imgslim",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "description": "CLI tool to convert images to WebP format",
   "bin": {
     "imgslim": "./dist/cli.js"
