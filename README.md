@@ -1,258 +1,218 @@
 # ImgSlim
 
-CLI tool for converting images to WebP format using [sharp](https://sharp.pixelplumbing.com/).
+Convert images to WebP from the command line. Smaller files, same quality.
 
-Two core modes:
+Two ways to use it:
 
-1. **Direct conversion** — convert image files/folders to WebP.
-2. **Source scan** — scan source code for local image references, then convert found images to WebP.
+1. **Direct conversion** — point it at images or folders, get `.webp` files.
+2. **Source scan** — scan your code for image references, convert all found images.
 
-> **Note:** ImgSlim never deletes original files. Converting `photo.png` produces `photo.webp` alongside the existing `photo.png`.
+> ImgSlim never deletes or modifies your original files. `photo.png` stays — you get `photo.webp` next to it.
 
 ---
 
 ## Supported Formats
 
-Input formats convertible to WebP:
+Converts these to WebP:
 
 - `.png`
-- `.jpg`
-- `.jpeg`
+- `.jpg` / `.jpeg`
 - `.svg`
 
-Output is always `.webp`.
-
-> **SVG note:** Sharp rasterizes SVG to PNG before encoding to WebP. The result is a `.webp` bitmap — vector scalability is lost. Consider this when using `.svg` as a pure vector asset.
+> **About SVG:** Sharp rasterizes SVG to PNG first, then encodes to WebP. The output is a bitmap — vector scalability is lost. Keep the original SVG if you need pure vector rendering.
 
 ---
 
-## Installation
+## Install
 
 ```bash
-npm install
-npm run build
+npm install -g imgslim
 ```
 
-After build, the binary is at `dist/cli.js`. When installed as a global package, the `imgslim` command becomes available.
+Node.js 18 or newer required.
 
-Run directly from the repository:
+Done. The `imgslim` command is now available everywhere:
 
 ```bash
-node dist/cli.js --help
+imgslim --help
 ```
 
 ---
 
 ## Quick Start
 
-Convert a single image:
+**Convert specific images** — point at files or folders, every supported image gets converted:
 
 ```bash
-imgslim photo.png
+imgslim photo.jpg                    # single file → photo.webp
+imgslim hero.png banner.jpg logo.svg # multiple files
+imgslim ./images --recursive         # every image in the folder (and subfolders)
 ```
 
-Output:
-
-```txt
-photo.png -> photo.webp
-```
-
-Scan source code and convert referenced images:
+**Scan source code** — only converts images that are actually referenced in your code:
 
 ```bash
 imgslim scan ./src --recursive
 ```
 
-Given source code containing:
-
-```html
-<img src="./assets/logo.png" />
-```
-
-ImgSlim creates `./src/assets/logo.webp` while leaving `./src/assets/logo.png` untouched.
+Example: if `./images/` has `logo.png`, `hero.jpg`, and `draft.png` — but only `logo.png` and `hero.jpg` appear in your HTML/CSS/JS — scan mode converts only those two. Direct mode (`imgslim ./images`) converts all three.
 
 ---
 
-## Mode 1: Direct Conversion
+## Usage
 
-Use this mode when you already know which image files or folders to convert.
+### Direct Conversion
 
-### Single File
-
-```bash
-imgslim photo.png
-```
-
-Output is created in the same directory: `photo.webp`
-
-### Multiple Files
+Use when you know which images to convert.
 
 ```bash
-imgslim image1.jpg image2.png banner.svg
+imgslim <files or folders...>
 ```
 
-### Convert All Images in a Directory
+**Single file**
 
-Non-recursive (top-level only):
+```bash
+imgslim photo.jpg
+```
+
+**Multiple files**
+
+```bash
+imgslim a.jpg b.png c.svg
+```
+
+**Folder (top-level only)**
 
 ```bash
 imgslim ./images
 ```
 
-Recursive (includes subdirectories):
+**Folder (recursive)**
 
 ```bash
 imgslim ./images --recursive
-# or
 imgslim -r ./images
 ```
 
-### Output Directory
+**Output to different folder**
 
 ```bash
 imgslim photo.png --out-dir ./webp
-# or
 imgslim -o ./webp photo.png
 ```
 
 Result: `./webp/photo.webp`
 
-### WebP Quality
-
-Default quality is `80`. Valid range: `0`–`100`.
-
-```bash
-imgslim photo.png --quality 90
-# or
-imgslim -q 90 photo.png
-```
-
-### Lossless WebP
-
-```bash
-imgslim photo.png --lossless
-```
-
-### Auto Mode
-
-Tests multiple WebP settings and picks the optimal result. Skips files if no WebP candidate is smaller than the original.
-
-```bash
-imgslim photo.png --auto
-```
-
-> **Note:** Using `--auto` with `--lossless` or explicit `--quality` will trigger a warning — auto mode uses its own quality selection strategy.
-
-### Overwrite Existing WebP
-
-By default, existing `.webp` output files are skipped. Use `--overwrite` to replace them:
-
-```bash
-imgslim photo.png --overwrite
-```
-
-> `--overwrite` only replaces `.webp` output. Original files (`.png`, `.jpg`, etc.) are never touched.
-
 ---
 
-## Mode 2: Source Scan
+### Source Scan
 
-Scan source code to discover local image references, then convert the found images to WebP.
+Scan source code for local image references, then convert the found images.
 
 ```bash
-imgslim scan <source...>
+imgslim scan <source files or folders...>
 ```
 
-Example:
+**Example**
 
 ```bash
 imgslim scan ./src --recursive
 ```
 
-### How It Works
+**How it works**
 
-1. Reads source files.
-2. Finds local image references (e.g. `./logo.png`, `../assets/photo.jpg`, `url("./bg.png")`).
-3. Resolves references to actual files on disk.
-4. Converts found images to `.webp` at the same location.
-5. Reports converted, skipped, unresolved, and failed items.
+1. Reads your source files (HTML, CSS, JS, TS, etc.)
+2. Finds local image references (e.g. `"./logo.png"`, `url("../bg.jpg")`, `![Alt](./img.png)`)
+3. Resolves references to actual files
+4. Converts each found image to `.webp` right next to the original
+5. Reports what happened
 
-### Detected Reference Patterns
-
-**HTML:**
+**Supported reference patterns**
 
 ```html
+<!-- HTML -->
 <img src="./assets/logo.png" />
 ```
 
-**CSS:**
-
 ```css
-.hero {
-  background-image: url("../images/hero.jpg");
-}
+/* CSS */
+.hero { background-image: url("../images/hero.jpg"); }
 ```
 
-**JavaScript / TypeScript:**
-
 ```ts
+// JavaScript / TypeScript
 import logo from "./assets/logo.png";
 const image = "../images/banner.jpg";
 ```
 
-**Markdown / MDX:**
-
 ```md
+<!-- Markdown / MDX -->
 ![Logo](./assets/logo.png)
 ```
 
-### Default Source Extensions
+**What it ignores**
+- Remote URLs (`https://...`)
+- Data URIs (`data:...`)
+- Dynamic expressions (`` `./img${n}.png` ``)
 
-Scan reads files with these extensions by default:
+**Default source file extensions**
 
 `.html` `.htm` `.css` `.scss` `.sass` `.less` `.js` `.jsx` `.ts` `.tsx` `.vue` `.svelte` `.astro` `.md` `.mdx`
 
-### Scan Options
+**Scan-specific options**
 
 | Option | Description |
 |---|---|
-| `<source...>` | One or more source files or directories |
-| `-q, --quality <number>` | WebP quality `0`–`100` (default: `80`) |
-| `-r, --recursive` | Recursively scan directories |
-| `--lossless` | Use lossless WebP compression |
-| `--overwrite` | Replace existing `.webp` output files |
-| `--auto` | Auto-select optimal WebP settings |
 | `--dry-run` | Preview what would be converted without writing files |
-| `--source-ext <exts>` | Comma-separated source extensions to scan (e.g. `ts,tsx,css`) |
-| `--json` | Output results as structured JSON |
-| `--verbose` | Show timing details per file |
-| `--quiet` | Show summary only, suppress per-file output |
+| `--source-ext <exts>` | Only scan specific extensions (e.g. `ts,tsx,css`) |
 
-### Dry Run
+---
 
-Preview which images would be converted without actually writing any files:
+### Shared Options
+
+All options work in both modes. Scan mode also supports its own `--dry-run` and `--source-ext`.
+
+**Quality** (default: `80`)
 
 ```bash
-imgslim scan ./src --recursive --dry-run
+imgslim photo.jpg --quality 90
+imgslim -q 90 photo.jpg
 ```
 
-### Filter by Source Extension
+**Lossless**
 
 ```bash
-imgslim scan ./src --recursive --source-ext ts,tsx,css
+imgslim photo.png --lossless
 ```
 
-### Auto Mode with Scan
+**Auto mode** — tests multiple settings, picks the best result. Skips files if WebP isn't smaller.
 
 ```bash
-imgslim scan ./src --recursive --auto
+imgslim photo.png --auto
+```
+
+> Combining `--auto` with `--quality` or `--lossless` gives a warning — auto mode picks its own settings.
+
+**Overwrite** — replace existing `.webp` files. By default, existing outputs are skipped.
+
+```bash
+imgslim photo.png --overwrite
+```
+
+> `--overwrite` only affects `.webp` outputs. Original files are never touched.
+
+**Recursive** — scan folders recursively.
+
+```bash
+imgslim ./images --recursive
+imgslim scan ./src --recursive
 ```
 
 ---
 
 ## CLI Output
 
-### Per-File Status
+### Per-file status
 
 ```
   OK  src/assets/logo.png -> src/assets/logo.webp  (42.1%, 18.4 KB) [q90]
@@ -260,12 +220,14 @@ imgslim scan ./src --recursive --auto
 
 | Status | Meaning |
 |---|---|
-| `OK` | Successfully converted to WebP |
-| `SKIP` | Skipped — output already exists, or auto mode found no smaller candidate |
-| `MISS` | Image referenced in source but not found on disk |
-| `FAIL` | Error reading or converting the file |
+| `OK` | Converted successfully |
+| `SKIP` | Skipped — output exists, or auto mode found no benefit |
+| `MISS` | Image referenced in source but file not found |
+| `FAIL` | Error reading or converting |
 
 ### Summary
+
+After conversion, you get a summary:
 
 ```
 ──────────────────────────────────────────
@@ -280,13 +242,29 @@ imgslim scan ./src --recursive --auto
 ──────────────────────────────────────────
 ```
 
----
+### Quiet mode
 
-## Output Formats
+Hide per-file output, show summary only:
 
-### JSON Output (CI/CD)
+```bash
+imgslim ./images --recursive --quiet
+```
 
-Use `--json` for machine-readable output. Prints a structured JSON object to stdout (progress and warnings go to stderr).
+### Verbose mode
+
+Show timing for each file:
+
+```bash
+imgslim ./images --verbose
+```
+
+```
+  OK  images/hero.png -> images/hero.webp  (74.4%, 35.0 KB) [128ms]
+```
+
+### JSON output
+
+Machine-readable for scripts and CI/CD:
 
 ```bash
 imgslim ./images --recursive --json
@@ -316,11 +294,7 @@ imgslim ./images --recursive --json
 }
 ```
 
-Scan mode JSON includes additional `scan` fields:
-
-```bash
-imgslim scan ./src --recursive --json
-```
+Scan mode JSON adds scan details:
 
 ```json
 {
@@ -335,51 +309,33 @@ imgslim scan ./src --recursive --json
 }
 ```
 
-### Verbose Mode
-
-Adds per-file timing information:
-
-```bash
-imgslim ./images --verbose
-```
-
-```
-  OK  images/hero.png -> images/hero.webp  (74.4%, 35.0 KB) [128ms]
-```
-
-### Quiet Mode
-
-Suppresses per-file output, showing only the summary:
-
-```bash
-imgslim ./images --recursive --quiet
-```
+> JSON output goes to stdout. Progress and warnings go to stderr — safe to pipe: `imgslim ... --json > report.json`
 
 ---
 
 ## Configuration File
 
-ImgSlim supports an optional `.imgslimrc` JSON config file. It is loaded from two locations (merged — local overrides home):
+Create an `.imgslimrc` file to set defaults. Place it in:
 
-1. `~/.imgslimrc` (home directory — global defaults)
-2. `./.imgslimrc` (current directory — project defaults)
+1. `~/.imgslimrc` — global defaults (applies everywhere)
+2. `./.imgslimrc` — project defaults (overrides global)
 
 CLI flags always override config values.
 
-### Example `.imgslimrc`
+**Example**
 
 ```json
 {
   "quality": 85,
   "auto": true,
-  "overwrite": false,
   "recursive": true,
   "sourceExt": "ts,tsx,css,html",
   "verbose": false,
-  "json": false,
   "quiet": false
 }
 ```
+
+**All available keys**
 
 | Key | Type | Description |
 |---|---|---|
@@ -390,52 +346,39 @@ CLI flags always override config values.
 | `overwrite` | boolean | Always overwrite existing `.webp` |
 | `auto` | boolean | Always use auto mode |
 | `sourceExt` | string | Default source extensions (comma-separated) |
-| `verbose` | boolean | Always show timing details |
-| `quiet` | boolean | Always suppress per-file output |
+| `verbose` | boolean | Always show per-file timing |
+| `quiet` | boolean | Always show summary only |
 | `json` | boolean | Always output JSON |
-
----
-
-## Important Behaviors
-
-- ImgSlim creates `.webp` files alongside originals — original files are **never** deleted or modified.
-- Source code files are **never** modified. The scan mode only reads them to discover image references.
-- Scan mode detects only local image references written as plain strings / path literals. Dynamic expressions (e.g. `` `./img${n}.png` ``) are not detected.
-- Remote URLs (`https://...`) and data URIs (`data:...`) are ignored.
-- Common directories are excluded during source scanning: `node_modules`, `.git`, `dist`, `build`, `coverage`, `.next`, `.nuxt`.
-- If the output `.webp` already exists, use `--overwrite` to regenerate it.
-- Atomic writes: files are written to a temporary path then renamed — no risk of corrupted output on crash.
 
 ---
 
 ## Common Workflows
 
-### Frontend / Web Project
+**Frontend project — scan and convert all images**
 
 ```bash
-npm run build
 imgslim scan ./src ./public --recursive --auto
 ```
 
-### Asset Directory Only
+**Convert an asset folder**
 
 ```bash
 imgslim ./assets --recursive --auto
 ```
 
-### High Quality Conversion
+**High-quality conversion**
 
 ```bash
 imgslim ./images --recursive --quality 90
 ```
 
-### Force Overwrite
+**Regenerate all WebP files**
 
 ```bash
 imgslim ./images --recursive --overwrite
 ```
 
-### CI/CD Pipeline
+**CI/CD pipeline**
 
 ```bash
 imgslim ./images --recursive --json --quiet > report.json
@@ -443,66 +386,18 @@ imgslim ./images --recursive --json --quiet > report.json
 
 ---
 
-## Development
+## Things to Know
 
-Build TypeScript:
+- **Original files are never deleted or modified.** Only `.webp` files are created.
+- **Source code files are never modified.** The scan command only reads them.
+- **Scan mode only detects plain string references.** Dynamic expressions like `` `./img${n}.png` `` are not found.
+- **Remote URLs** (`https://...`) and **data URIs** (`data:...`) are ignored.
+- **Directories skipped** during source scan: `node_modules`, `.git`, `dist`, `build`, `coverage`, `.next`, `.nuxt`.
+- **Atomic writes.** Files are written to a temp path then renamed — no risk of corrupted output if the process crashes.
+- **Existing `.webp` files are skipped** by default. Use `--overwrite` to regenerate them.
 
-```bash
-npm run build
-```
+---
 
-Run CLI locally:
-
-```bash
-node dist/cli.js --help
-node dist/cli.js scan --help
-```
-
-Run tests:
-
-```bash
-node test/imgslim.test.mjs
-```
-
-## Publishing
-
-### Manual
-
-```bash
-# 1. Bump version
-npm version patch   # 1.0.0 → 1.0.1
-# npm version minor # 1.0.0 → 1.1.0
-# npm version major # 1.0.0 → 2.0.0
-
-# 2. Publish to npm
-npm publish --access public
-```
-
-### Automated (GitHub Actions + release-please)
-
-Commits to `main` are monitored by [release-please](https://github.com/googleapis/release-please). When new features or fixes are pushed, it automatically:
-
-1. Opens a **Release PR** with version bump and auto-generated changelog.
-2. When merged, creates a **GitHub Release** with release notes.
-3. The release triggers the **npm publish** workflow — build, test, and publish.
-
-**One-time setup:**
-
-1. Create an npm **Granular Access Token** (or Classic) with publish permission at [npmjs.com](https://www.npmjs.com/settings/mizu-pras/tokens).
-2. Add it to your GitHub repo: **Settings → Secrets and variables → Actions** → `NPM_TOKEN`.
-
-**Commit convention** (for accurate changelog generation):
-
-```bash
-feat: add --json output flag        # → minor bump
-fix: symlink cycle causes crash      # → patch bump
-feat!: drop Node 16 support          # → major bump
-chore: update dependencies           # → no bump
-```
-
-### Install from npm
-
-```bash
-npm install -g imgslim
-imgslim --help
-```
+- [Changelog](CHANGELOG.md)
+- [npm package](https://www.npmjs.com/package/imgslim)
+- [GitHub](https://github.com/mizu-pras/imgslim)
