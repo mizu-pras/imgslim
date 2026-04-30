@@ -2,6 +2,22 @@
 
 All notable changes to ImgSlim will be documented in this file.
 
+## [1.0.2] — 2026-04-30
+
+### Changed
+- **README rewritten** — Simplified and restructured for end-users. Installation now highlights `npm i -g imgslim`. Direct conversion and source scan modes clearly differentiated with examples. Development/publishing sections moved to `DEVELOPER.md`.
+- **Indonesian README synced** — `README_id.md` mirrors the English README in structure and content.
+
+### Added
+- **Developer documentation** (`DEVELOPER.md`) — Architecture overview, module breakdown, data flow diagrams, key interfaces, build system, testing guide, release process, and design decisions.
+- **License file** — MIT license added.
+- **Changelog file** — `CHANGELOG.md` tracking all notable changes.
+- **Release-please CI workflow** — Automated release PR and changelog generation on push to master.
+
+### Development
+- MIT license file included in repository
+- Version bumped from 1.0.1 to 1.0.2
+
 ## [1.0.1] — 2026-04-30
 
 ### Fixed
