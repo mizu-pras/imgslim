@@ -8,7 +8,8 @@
   "files": [
     "dist/",
     "README.md",
-    "README_id.md"
+    "README_id.md",
+    "CHANGELOG.md"
   ],
   "scripts": {
     "prebuild": "rm -rf dist",
@@ -31,6 +32,9 @@
     "url": "git+https://github.com/mizu-pras/imgslim.git"
   },
   "license": "MIT",
+  "engines": {
+    "node": ">=18"
+  },
   "dependencies": {
     "commander": "^12.1.0",
     "sharp": "^0.33.5"

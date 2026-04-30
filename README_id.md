@@ -478,11 +478,27 @@ npm version patch   # 1.0.0 → 1.0.1
 npm publish --access public
 ```
 
-### Otomatis (GitHub Actions)
+### Otomatis (GitHub Actions + release-please)
 
-1. Buka akun npm Anda → **Access Tokens** → buat **Granular Access Token** (atau Classic) dengan izin publish.
-2. Di repo GitHub: **Settings → Secrets and variables → Actions** → tambahkan `NPM_TOKEN` dengan nilai token.
-3. Buat [GitHub Release](https://github.com/mzaini30/imgslim/releases/new) — workflow akan build, test, dan publikasi secara otomatis.
+Commit ke `main` dipantau oleh [release-please](https://github.com/googleapis/release-please). Saat fitur atau perbaikan baru di-push, secara otomatis:
+
+1. Membuka **Release PR** dengan bump versi dan changelog yang di-generate otomatis.
+2. Saat di-merge, membuat **GitHub Release** dengan catatan rilis.
+3. Release memicu workflow **npm publish** — build, test, dan publikasi.
+
+**Setup satu kali:**
+
+1. Buat **Granular Access Token** npm (atau Classic) dengan izin publish di [npmjs.com](https://www.npmjs.com/settings/mizu-pras/tokens).
+2. Tambahkan ke repo GitHub: **Settings → Secrets and variables → Actions** → `NPM_TOKEN`.
+
+**Konvensi commit** (untuk changelog akurat):
+
+```bash
+feat: tambah flag --json              # → minor bump
+fix: symlink cycle bikin crash        # → patch bump
+feat!: hapus dukungan Node 16         # → major bump
+chore: update dependensi              # → tanpa bump
+```
 
 ### Install dari npm
 

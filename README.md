@@ -478,11 +478,27 @@ npm version patch   # 1.0.0 → 1.0.1
 npm publish --access public
 ```
 
-### Automated (GitHub Actions)
+### Automated (GitHub Actions + release-please)
 
-1. Go to your npm account → **Access Tokens** → generate a **Granular Access Token** (or Classic) with publish permission.
-2. In your GitHub repo: **Settings → Secrets and variables → Actions** → add `NPM_TOKEN` with the token value.
-3. Create a [GitHub Release](https://github.com/mizu-pras/imgslim/releases/new) — the workflow builds, tests, and publishes automatically.
+Commits to `main` are monitored by [release-please](https://github.com/googleapis/release-please). When new features or fixes are pushed, it automatically:
+
+1. Opens a **Release PR** with version bump and auto-generated changelog.
+2. When merged, creates a **GitHub Release** with release notes.
+3. The release triggers the **npm publish** workflow — build, test, and publish.
+
+**One-time setup:**
+
+1. Create an npm **Granular Access Token** (or Classic) with publish permission at [npmjs.com](https://www.npmjs.com/settings/mizu-pras/tokens).
+2. Add it to your GitHub repo: **Settings → Secrets and variables → Actions** → `NPM_TOKEN`.
+
+**Commit convention** (for accurate changelog generation):
+
+```bash
+feat: add --json output flag        # → minor bump
+fix: symlink cycle causes crash      # → patch bump
+feat!: drop Node 16 support          # → major bump
+chore: update dependencies           # → no bump
+```
 
 ### Install from npm
 
