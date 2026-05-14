@@ -1,13 +1,15 @@
 # ImgSlim
 
-Convert images to WebP from the command line. Smaller files, same quality.
+Convert images to WebP and minify PNG files from the command line. Smaller files, simple CLI.
 
-Two ways to use it:
+Three ways to use it:
 
 1. **Direct conversion** — point it at images or folders, get `.webp` files.
 2. **Source scan** — scan your code for image references, convert all found images.
+3. **Minify** — compress PNG images, output `_min.png` alongside the original.
 
-> ImgSlim never deletes or modifies your original files. `photo.png` stays — you get `photo.webp` next to it.
+> For conversion: ImgSlim never deletes or modifies your original files. `photo.png` stays — you get `photo.webp` next to it.
+> For minify: ImgSlim writes `_min.png` alongside the original. The original is never modified. Use `--overwrite` to replace an existing `_min.png`.
 
 ---
 
@@ -20,6 +22,12 @@ Converts these to WebP:
 - `.svg`
 
 > **About SVG:** Sharp rasterizes SVG to PNG first, then encodes to WebP. The output is a bitmap — vector scalability is lost. Keep the original SVG if you need pure vector rendering.
+
+Minifies these without changing format:
+
+- `.png` only
+
+JPG, SVG, and WebP inputs are skipped in `minify` mode for now.
 
 ---
 
@@ -45,6 +53,7 @@ imgslim --help
 
 ```bash
 imgslim photo.jpg                    # single file → photo.webp
+imgslim convert photo.jpg            # explicit convert command
 imgslim hero.png banner.jpg logo.svg # multiple files
 imgslim ./images --recursive         # every image in the folder (and subfolders)
 ```
@@ -53,6 +62,15 @@ imgslim ./images --recursive         # every image in the folder (and subfolders
 
 ```bash
 imgslim scan ./src --recursive
+```
+
+**Minify PNG files** — compress PNGs without changing format:
+
+```bash
+imgslim minify photo.png               # creates photo_min.png
+imgslim minify photo.png --dry-run     # preview only
+imgslim minify photo.png --suffix .opt # creates photo.opt.png
+imgslim minify ./images --recursive    # minify all PNGs in folder
 ```
 
 Example: if `./images/` has `logo.png`, `hero.jpg`, and `draft.png` — but only `logo.png` and `hero.jpg` appear in your HTML/CSS/JS — scan mode converts only those two. Direct mode (`imgslim ./images`) converts all three.
@@ -67,12 +85,16 @@ Use when you know which images to convert.
 
 ```bash
 imgslim <files or folders...>
+imgslim convert <files or folders...>
 ```
+
+The default command and `convert` do the same thing. The default form is kept for backward compatibility.
 
 **Single file**
 
 ```bash
 imgslim photo.jpg
+imgslim convert photo.jpg
 ```
 
 **Multiple files**
@@ -166,11 +188,102 @@ const image = "../images/banner.jpg";
 | `--dry-run` | Preview what would be converted without writing files |
 | `--source-ext <exts>` | Only scan specific extensions (e.g. `ts,tsx,css`) |
 
+Scan also accepts WebP conversion options: `--quality`, `--lossless`, `--overwrite`, `--auto`, and `--recursive`.
+
 ---
 
-### Shared Options
+### Minify
 
-All options work in both modes. Scan mode also supports its own `--dry-run` and `--source-ext`.
+Compress PNG images, output a `_min.png` file alongside the original by default. The original is never modified.
+
+```bash
+imgslim minify photo.png
+```
+
+Result: `photo.png` stays, `photo_min.png` is created.
+
+**Single file**
+
+```bash
+imgslim minify photo.png
+```
+
+**Multiple files**
+
+```bash
+imgslim minify a.png b.png
+```
+
+**Folder (recursive)**
+
+```bash
+imgslim minify ./images --recursive
+imgslim minify -r ./images
+```
+
+**Custom suffix**
+
+```bash
+imgslim minify photo.png --suffix .optimized
+# Result: photo.optimized.png
+
+imgslim minify photo.png --suffix -small
+# Result: photo-small.png
+```
+
+**Output to directory**
+
+```bash
+imgslim minify photo.png --out-dir ./dist
+# Result: ./dist/photo_min.png
+```
+
+When multiple files with the same basename target the same `--out-dir` output, ImgSlim keeps the first and skips later collisions.
+
+> **Supported formats:** PNG only. JPG, SVG, and WebP inputs are skipped.
+>
+> **Safety:** writes to a temp file first, compares size against original. The output file is written only if smaller. If not smaller, the temp file is deleted and no output is created.
+>
+> **Important:** PNG minify uses palette quantization (`palette: true`) by default. This can reduce colors to 256-color palette and strip metadata. Use `--lossless-only` to avoid palette quantization. Use Git/backup if originals matter. Animated PNGs and symlinks are skipped for safety.
+
+**Minify options**
+
+| Option | Description |
+|---|---|
+| `-r, --recursive` | Scan directories recursively |
+| `--dry-run` | Preview what would be converted without writing files |
+| `--suffix <suffix>` | Output suffix (default: `_min`) |
+| `-o, --out-dir <dir>` | Output directory for minified PNG files |
+| `--overwrite` | Replace existing output file (default: skip if exists) |
+| `--lossless-only` | Skip palette quantization for lossless-like quality |
+
+Suffix rules:
+
+- Default suffix: `_min`
+- Empty suffix is invalid
+- Path separators (`/` or `\`) are invalid
+- Files already ending with the active suffix are skipped to avoid `photo_min_min.png`
+
+**Dry-run example**
+
+```bash
+imgslim minify photo.png --dry-run
+# Would convert:
+#   photo.png -> photo_min.png
+```
+
+**Lossless-only example**
+
+```bash
+imgslim minify photo.png --lossless-only
+# Uses compression without palette quantization (lossless quality)
+```
+
+---
+
+### Convert Options
+
+These options apply to direct conversion, `convert`, and `scan`. Minify has its own set of options (see above). Scan mode also supports `--dry-run` and `--source-ext`.
 
 **Quality** (default: `80`)
 
@@ -199,7 +312,7 @@ imgslim photo.png --auto
 imgslim photo.png --overwrite
 ```
 
-> `--overwrite` only affects `.webp` outputs. Original files are never touched.
+> `--overwrite` only affects `.webp` outputs (convert/scan) or `_min.png` outputs (minify). Original files are never modified.
 
 **Recursive** — scan folders recursively.
 
@@ -216,14 +329,22 @@ imgslim scan ./src --recursive
 
 ```
   OK  src/assets/logo.png -> src/assets/logo.webp  (42.1%, 18.4 KB) [q90]
+  OK  src/assets/logo.png -> src/assets/logo_min.png  (18.5%, 5.2 KB)
 ```
 
 | Status | Meaning |
 |---|---|
-| `OK` | Converted successfully |
-| `SKIP` | Skipped — output exists, or auto mode found no benefit |
+| `OK` | Converted or minified successfully |
+| `SKIP` | Skipped — output exists, unsupported minify format, or no smaller candidate |
 | `MISS` | Image referenced in source but file not found |
 | `FAIL` | Error reading or converting |
+
+Dry-run minify shows planned writes without creating files:
+
+```txt
+Would convert:
+  src/assets/logo.png -> src/assets/logo_min.png
+```
 
 ### Summary
 
@@ -337,10 +458,12 @@ CLI flags always override config values.
 
 **All available keys**
 
+Config currently applies to global output behavior and WebP conversion/scan defaults. Minify-specific options (`suffix`, `lossless-only`, minify `out-dir`) are CLI-only for now.
+
 | Key | Type | Description |
 |---|---|---|
 | `quality` | number | WebP quality `0`–`100` |
-| `outDir` | string | Default output directory |
+| `outDir` | string | Default WebP output directory |
 | `recursive` | boolean | Always scan directories recursively |
 | `lossless` | boolean | Use lossless WebP |
 | `overwrite` | boolean | Always overwrite existing `.webp` |
@@ -378,6 +501,24 @@ imgslim ./images --recursive --quality 90
 imgslim ./images --recursive --overwrite
 ```
 
+**Preview PNG minify**
+
+```bash
+imgslim minify ./images --recursive --dry-run
+```
+
+**Minify PNGs to a separate folder**
+
+```bash
+imgslim minify ./images --recursive --out-dir ./optimized
+```
+
+**Lossless-style PNG minify**
+
+```bash
+imgslim minify ./images --recursive --lossless-only
+```
+
 **CI/CD pipeline**
 
 ```bash
@@ -388,7 +529,10 @@ imgslim ./images --recursive --json --quiet > report.json
 
 ## Things to Know
 
-- **Original files are never deleted or modified.** Only `.webp` files are created.
+- **Conversion never deletes or modifies original files.** Only `.webp` files are created.
+- **Minify creates `_min.png` alongside the original.** Original files are never modified.
+- **Minify with `--out-dir` flattens output names.** Duplicate basenames are skipped to prevent overwrites.
+- **Minify default can be lossy.** Use `--lossless-only` to avoid palette quantization.
 - **Source code files are never modified.** The scan command only reads them.
 - **Scan mode only detects plain string references.** Dynamic expressions like `` `./img${n}.png` `` are not found.
 - **Remote URLs** (`https://...`) and **data URIs** (`data:...`) are ignored.

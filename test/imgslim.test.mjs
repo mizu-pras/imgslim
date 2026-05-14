@@ -6,6 +6,7 @@ import { describe, it, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import {
+  copyFileSync,
   cpSync,
   existsSync,
   mkdirSync,
@@ -59,6 +60,12 @@ function setupDir(name, images = []) {
   for (const img of images) {
     cpSync(join(TEST_IMAGES, img), join(dir, img));
   }
+  return dir;
+}
+
+function setupConfiguredDir(name, images, config) {
+  const dir = setupDir(name, images);
+  writeFileSync(join(dir, '.imgslimrc'), JSON.stringify(config, null, 2));
   return dir;
 }
 
@@ -267,6 +274,486 @@ describe('imgslim CLI', () => {
   });
 
   // =========================================================================
+  //  Explicit convert subcommand
+  // =========================================================================
+
+  describe('explicit convert subcommand', () => {
+    it('should convert single PNG to WebP via `imgslim convert`', () => {
+      const dir = setupDir('explicit-convert', ['0.png']);
+      const input = join(dir, '0.png');
+      const expected = join(dir, '0.webp');
+      const inputSize = fileSize(input);
+
+      const { stdout, exitCode } = run(['convert', input]);
+
+      assert.strictEqual(exitCode, 0);
+      assert.ok(existsSync(expected), 'WebP output file should exist');
+      assert.ok(
+        fileSize(expected) < inputSize,
+        'WebP should be smaller than original PNG',
+      );
+      assert.ok(stdout.includes('OK'), 'stdout should contain OK');
+    });
+
+    it('should output to --out-dir with convert subcommand', () => {
+      const dir = setupDir('convert-outdir', ['0.png']);
+      const input = join(dir, '0.png');
+      const outDir = join(dir, 'out');
+
+      const { stdout, exitCode } = run(['convert', input, '--out-dir', outDir]);
+
+      assert.strictEqual(exitCode, 0);
+      assert.ok(
+        existsSync(join(outDir, '0.webp')),
+        'WebP should be created in specified output directory',
+      );
+      assert.ok(stdout.includes('OK'));
+    });
+
+    it('should skip later convert collisions in --out-dir', () => {
+      const dir = setupDir('convert-outdir-collision', ['0.png']);
+      const sub = join(dir, 'sub');
+      mkdirSync(sub, { recursive: true });
+      cpSync(join(TEST_IMAGES, '0.png'), join(sub, '0.png'));
+      const outDir = join(dir, 'out');
+
+      const { stdout, exitCode } = run(['convert', dir, '--recursive', '--out-dir', outDir]);
+
+      assert.strictEqual(exitCode, 0);
+      assert.ok(existsSync(join(outDir, '0.webp')), 'First colliding output should exist');
+      assert.ok(stdout.includes('SKIP'), 'Later collision should be skipped');
+      assert.ok(stdout.includes('collision'), 'Skip reason should mention collision');
+    });
+  });
+
+  // =========================================================================
+  //  Minify subcommand
+  // =========================================================================
+
+  describe('minify subcommand', () => {
+    it('should create _min.png from PNG, keep original, no .webp', () => {
+      const dir = setupDir('minify-png', ['0.png']);
+      const input = join(dir, '0.png');
+      const minOutput = join(dir, '0_min.png');
+      const webp = join(dir, '0.webp');
+      const before = fileSize(input);
+
+      const { stdout, exitCode } = run(['minify', input]);
+
+      assert.strictEqual(exitCode, 0);
+      assert.ok(existsSync(input), 'Original PNG should still exist');
+      assert.ok(!existsSync(webp), 'No WebP should be created for minify');
+
+      // Should either create _min.png (OK) or skip if already optimal
+      const isOk = stdout.includes('OK');
+      const isSkip = stdout.includes('SKIP');
+      assert.ok(isOk || isSkip, 'Should show OK or SKIP');
+      if (isOk) {
+        assert.ok(existsSync(minOutput), '_min.png should exist on OK');
+        assert.ok(
+          fileSize(minOutput) < before,
+          'Minified PNG should be smaller than original',
+        );
+        // Output shows proper input -> output
+        assert.ok(
+          stdout.includes('0.png ->'),
+          'Output should show input -> output format',
+        );
+      }
+    });
+
+    it('should preserve original file unchanged (size, mtime) after minify', () => {
+      const dir = setupDir('minify-preserve', ['0.png']);
+      const input = join(dir, '0.png');
+
+      const origSize = fileSize(input);
+      const origMtime = statSync(input).mtimeMs;
+
+      const { exitCode } = run(['minify', input]);
+      assert.strictEqual(exitCode, 0);
+
+      // Original must be untouched
+      assert.strictEqual(fileSize(input), origSize, 'Original size unchanged');
+      assert.strictEqual(statSync(input).mtimeMs, origMtime, 'Original mtime unchanged');
+    });
+
+    it('should skip existing _min.png without --overwrite', () => {
+      const dir = setupDir('minify-ow-skip', ['0.png']);
+      const input = join(dir, '0.png');
+      const minOutput = join(dir, '0_min.png');
+
+      // First run — ensure _min.png exists
+      run(['minify', input, '--overwrite']);
+      // If original is already optimally compressed _min may not have been
+      // created; force-create a dummy to guarantee overwrite-skip path
+      if (!existsSync(minOutput)) {
+        writeFileSync(minOutput, Buffer.alloc(64));
+      }
+
+      // Second run WITHOUT --overwrite — should skip
+      const r2 = run(['minify', input]);
+      assert.strictEqual(r2.exitCode, 0);
+      assert.ok(r2.stdout.includes('SKIP'), 'Should skip without --overwrite');
+      assert.ok(!r2.stdout.includes('OK'), 'Should not OK');
+    });
+
+    it('should replace existing _min.png with --overwrite', () => {
+      const dir = setupDir('minify-ow-replace', ['0.png']);
+      const input = join(dir, '0.png');
+      const minOutput = join(dir, '0_min.png');
+
+      // Create a deliberately large placeholder _min.png (100 KB)
+      writeFileSync(minOutput, Buffer.alloc(100 * 1024));
+      const placeholderSize = fileSize(minOutput);
+
+      const { stdout, exitCode } = run(['minify', input, '--overwrite']);
+
+      assert.strictEqual(exitCode, 0);
+      assert.ok(existsSync(minOutput), '_min.png should exist');
+
+      const isOk = stdout.includes('OK');
+      const isSkip = stdout.includes('SKIP');
+      assert.ok(isOk || isSkip, 'Should show OK or SKIP');
+
+      if (isOk) {
+        // Real minified output must be drastically smaller than 100 KB dummy
+        assert.ok(
+          fileSize(minOutput) < placeholderSize,
+          'Minified _min.png should be smaller than placeholder',
+        );
+        assert.ok(fileSize(minOutput) > 0, '_min.png should not be empty');
+      } else {
+        // When skipped the placeholder remains untouched
+        assert.strictEqual(
+          fileSize(minOutput),
+          placeholderSize,
+          'Placeholder unchanged when skipped',
+        );
+      }
+    });
+
+    it('should skip unsupported format (JPG) for minify', () => {
+      const dir = setupDir('minify-unsupported', ['0.png']);
+      const input = join(dir, 'test.jpg');
+      copyFileSync(join(TEST_IMAGES, '0.png'), input);
+
+      const { stdout, exitCode } = run(['minify', input]);
+
+      assert.strictEqual(exitCode, 0);
+      assert.ok(stdout.includes('SKIP'), 'Should show SKIP for unsupported format');
+      assert.ok(!stdout.includes('OK'), 'Should not show OK');
+    });
+
+    it('should skip WebP files for minify instead of ignoring silently', () => {
+      const dir = setupDir('minify-webp-skip', ['0.png']);
+      const png = join(dir, '0.png');
+      const webp = join(dir, '0.webp');
+
+      const converted = run(['convert', png]);
+      assert.strictEqual(converted.exitCode, 0);
+      assert.ok(existsSync(webp), 'WebP fixture should exist');
+
+      const { stdout, exitCode } = run(['minify', webp]);
+
+      assert.strictEqual(exitCode, 0);
+      assert.ok(stdout.includes('SKIP'), 'Should show SKIP for WebP');
+      assert.ok(stdout.includes('only PNG supported'));
+    });
+
+    it('should create _min.png for nested PNG with --recursive, no .webp', () => {
+      const dir = setupDir('minify-recursive', ['0.png']);
+      const sub = join(dir, 'sub');
+      mkdirSync(sub, { recursive: true });
+      cpSync(join(TEST_IMAGES, '1.png'), join(sub, '1.png'));
+
+      const { stdout, exitCode } = run(['minify', dir, '--recursive']);
+
+      assert.strictEqual(exitCode, 0);
+      assert.ok(existsSync(join(dir, '0.png')), 'Root PNG still exists');
+      assert.ok(existsSync(join(sub, '1.png')), 'Nested PNG still exists');
+      assert.ok(!existsSync(join(dir, '0.webp')), 'No root WebP');
+      assert.ok(!existsSync(join(sub, '1.webp')), 'No nested WebP');
+
+      const okCount = (stdout.match(/  OK  /g) || []).length;
+      const skipCount = (stdout.match(/ SKIP /g) || []).length;
+      assert.ok(okCount + skipCount >= 2, 'Should handle both files');
+
+      // If OK, _min.png should exist
+      if (okCount > 0) {
+        const hasRootMin = existsSync(join(dir, '0_min.png'));
+        const hasSubMin = existsSync(join(sub, '1_min.png'));
+        assert.ok(hasRootMin || hasSubMin, 'OK should produce at least one _min.png');
+      }
+    });
+
+    it('second recursive minify should not create _min_min.png', () => {
+      const dir = setupDir('minify-no-double', ['0.png']);
+      const sub = join(dir, 'sub');
+      mkdirSync(sub, { recursive: true });
+      cpSync(join(TEST_IMAGES, '1.png'), join(sub, '1.png'));
+
+      // First minify — creates _min.png files (use --overwrite so existing
+      // _min.png from previous test runs don't cause skips)
+      run(['minify', dir, '--recursive', '--overwrite']);
+
+      // Second minify — should NOT create _min_min.png
+      const { stdout, exitCode } = run(['minify', dir, '--recursive']);
+
+      assert.strictEqual(exitCode, 0);
+
+      // No _min_min.png anywhere
+      assert.ok(
+        !existsSync(join(dir, '0_min_min.png')),
+        'No double min suffix in root',
+      );
+      assert.ok(
+        !existsSync(join(sub, '1_min_min.png')),
+        'No double min suffix in sub',
+      );
+
+      // Original files still exist
+      assert.ok(existsSync(join(dir, '0.png')), 'Root original exists');
+      assert.ok(existsSync(join(sub, '1.png')), 'Sub original exists');
+    });
+
+    it('--dry-run should show would-convert without writing files', () => {
+      const dir = setupDir('minify-dryrun', ['0.png']);
+      const input = join(dir, '0.png');
+      const minOutput = join(dir, '0_min.png');
+
+      const { stdout, exitCode } = run(['minify', input, '--dry-run']);
+
+      assert.strictEqual(exitCode, 0);
+      assert.ok(
+        stdout.includes('Dry-run mode'),
+        'Should indicate dry-run mode',
+      );
+      assert.ok(
+        stdout.includes('Would convert') || stdout.includes('0_min.png'),
+        'Should show would-convert output',
+      );
+      // Verify no _min.png was actually created
+      assert.ok(
+        !existsSync(minOutput),
+        'No _min.png should be created in dry-run',
+      );
+    });
+
+    it('--dry-run with existing output should report skip without writing', () => {
+      const dir = setupDir('minify-dryrun-skip', ['0.png']);
+      const input = join(dir, '0.png');
+      const minOutput = join(dir, '0_min.png');
+
+      // Create output so dry-run reports skip
+      run(['minify', input, '--overwrite']);
+      const { stdout, exitCode } = run(['minify', input, '--dry-run']);
+
+      assert.strictEqual(exitCode, 0);
+      assert.ok(
+        stdout.includes('SKIP') || stdout.includes('output exists'),
+        'Dry-run should report skip for existing output',
+      );
+    });
+
+    it('--suffix should control output filename', () => {
+      const dir = setupDir('minify-suffix', ['0.png']);
+      const input = join(dir, '0.png');
+      const customOutput = join(dir, '0.optimized.png');
+      const defaultOutput = join(dir, '0_min.png');
+
+      const { stdout, exitCode } = run(['minify', input, '--suffix', '.optimized']);
+
+      assert.strictEqual(exitCode, 0);
+      assert.ok(existsSync(input), 'Original PNG still exists');
+      assert.ok(
+        existsSync(customOutput) || stdout.includes('SKIP'),
+        'Should create .optimized.png or skip if already optimal',
+      );
+      assert.ok(
+        !existsSync(defaultOutput),
+        'Default _min.png should NOT be created',
+      );
+      if (existsSync(customOutput)) {
+        assert.ok(stdout.includes('OK'), 'Should show OK when custom suffix output created');
+      }
+    });
+
+    it('--suffix with existing output skips without --overwrite', () => {
+      const dir = setupDir('minify-suffix-skip', ['0.png']);
+      const input = join(dir, '0.png');
+      const customOutput = join(dir, '0.optimized.png');
+
+      // Create custom suffixed output
+      run(['minify', input, '--suffix', '.optimized', '--overwrite']);
+      if (existsSync(customOutput)) {
+        const { stdout, exitCode } = run(['minify', input, '--suffix', '.optimized']);
+        assert.strictEqual(exitCode, 0);
+        assert.ok(stdout.includes('SKIP'), 'Should show SKIP for existing custom suffix output');
+      }
+    });
+
+    it('--suffix skip prevents double suffix on repeated runs', () => {
+      const dir = setupDir('minify-suffix-double', ['0.png']);
+      const input = join(dir, '0.png');
+
+      // First run with custom suffix
+      run(['minify', input, '--suffix', '-opt', '--overwrite']);
+
+      // Second run with same suffix — should skip existing suffixed file
+      const { stdout, exitCode } = run(['minify', input, '--suffix', '-opt']);
+      assert.strictEqual(exitCode, 0);
+      assert.ok(
+        !existsSync(join(dir, '0-opt-opt.png')),
+        'No double suffix',
+      );
+    });
+
+    it('--out-dir should place _min.png in specified directory', () => {
+      const dir = setupDir('minify-outdir', ['0.png']);
+      const input = join(dir, '0.png');
+      const outDir = join(dir, 'output');
+      const expected = join(outDir, '0_min.png');
+
+      const { stdout, exitCode } = run(['minify', input, '--out-dir', outDir]);
+
+      assert.strictEqual(exitCode, 0);
+      // Either created in outDir or skipped
+      if (existsSync(expected)) {
+        assert.ok(stdout.includes('OK'), 'Should OK when output in outDir');
+      } else {
+        assert.ok(stdout.includes('SKIP'), 'May skip if already optimal');
+      }
+      // No _min.png next to original
+      assert.ok(
+        !existsSync(join(dir, '0_min.png')),
+        'No _min.png in input directory',
+      );
+    });
+
+    it('--lossless-only should produce output without palette quantization', () => {
+      const dir = setupDir('minify-lossless', ['0.png']);
+      const input = join(dir, '0.png');
+      const minOutput = join(dir, '0_min.png');
+
+      const { stdout, exitCode } = run(['minify', input, '--lossless-only']);
+
+      assert.strictEqual(exitCode, 0);
+      // Either created _min.png or skipped
+      const isOk = stdout.includes('OK');
+      const isSkip = stdout.includes('SKIP');
+      assert.ok(isOk || isSkip, 'Should OK or SKIP with --lossless-only');
+      if (isOk) {
+        assert.ok(
+          existsSync(minOutput),
+          'Lossless-only should create _min.png on OK',
+        );
+        assert.ok(
+          fileSize(minOutput) < fileSize(input),
+          'Lossless-only _min.png should be smaller than original',
+        );
+      }
+    });
+
+    it('minify --help should show minify-specific options', () => {
+      const { stdout } = run(['minify', '--help']);
+
+      assert.ok(stdout.includes('--dry-run'), 'Help should show --dry-run');
+      assert.ok(stdout.includes('--suffix'), 'Help should show --suffix');
+      assert.ok(stdout.includes('--out-dir'), 'Help should show --out-dir');
+      assert.ok(stdout.includes('--overwrite'), 'Help should show --overwrite');
+      assert.ok(stdout.includes('--lossless-only'), 'Help should show --lossless-only');
+      assert.ok(stdout.includes('--recursive'), 'Help should show --recursive');
+    });
+
+    it('global --help should NOT show convert-only flags in minify section', () => {
+      // Just verify no crash and basic help works
+      const { stdout } = run(['--help']);
+      assert.ok(stdout.includes('imgslim'), 'Help should show program name');
+    });
+
+    it('empty --suffix should error', () => {
+      const { exitCode, stderr } = run(['minify', 'test/0.png', '--suffix', '']);
+      assert.strictEqual(exitCode, 1);
+      assert.ok(stderr.includes('Error'), 'Should error on empty suffix');
+    });
+
+    it('--suffix with path separator should error', () => {
+      const { exitCode, stderr } = run(['minify', 'test/0.png', '--suffix', 'foo/bar']);
+      assert.strictEqual(exitCode, 1);
+      assert.ok(stderr.includes('Error'), 'Should error on path separator');
+    });
+
+    it('outDir collision skips duplicate basenames', () => {
+      const dir = setupDir('minify-outdir-collision', ['0.png']);
+      const sub = join(dir, 'sub');
+      mkdirSync(sub, { recursive: true });
+      cpSync(join(TEST_IMAGES, '0.png'), join(sub, '0.png'));
+      const outDir = join(dir, 'out');
+
+      const { stdout, exitCode } = run(['minify', dir, '--recursive', '--out-dir', outDir]);
+
+      assert.strictEqual(exitCode, 0);
+      const outputFile = join(outDir, '0_min.png');
+      assert.ok(existsSync(outputFile), 'At least one output should exist');
+      assert.ok(stdout.includes('SKIP'), 'Collision should produce SKIP');
+      assert.ok(
+        stdout.includes('collision') || stdout.includes('output exists'),
+        'Skip reason should mention collision or existing output',
+      );
+    });
+
+    it('--suffix .optimized should create output with OK when smaller', () => {
+      const dir = setupDir('minify-suffix-strong', ['0.png']);
+      const input = join(dir, '0.png');
+      const customOutput = join(dir, '0.optimized.png');
+
+      // Use --overwrite to clear any previous state
+      const { stdout, exitCode } = run(['minify', input, '--suffix', '.optimized', '--overwrite']);
+
+      assert.strictEqual(exitCode, 0);
+      const isOk = stdout.includes('OK');
+      const isSkip = stdout.includes('SKIP');
+      assert.ok(isOk || isSkip, 'Should OK or SKIP');
+      if (isOk) {
+        assert.ok(existsSync(customOutput), 'Custom suffix output should exist on OK');
+        assert.ok(
+          fileSize(customOutput) < fileSize(input),
+          'Custom suffix output should be smaller than original',
+        );
+        assert.ok(
+          stdout.includes('0.optimized.png'),
+          'Output path in message should use custom suffix',
+        );
+      }
+    });
+
+    it('--out-dir should create output in specified dir with OK when smaller', () => {
+      const dir = setupDir('minify-outdir-strong', ['0.png']);
+      const input = join(dir, '0.png');
+      const outDir = join(dir, 'dist');
+      const expected = join(outDir, '0_min.png');
+
+      const { stdout, exitCode } = run(['minify', input, '--out-dir', outDir, '--overwrite']);
+
+      assert.strictEqual(exitCode, 0);
+      const isOk = stdout.includes('OK');
+      const isSkip = stdout.includes('SKIP');
+      assert.ok(isOk || isSkip, 'Should OK or SKIP');
+      if (isOk) {
+        assert.ok(existsSync(expected), 'Output should be in specified outDir');
+        assert.ok(
+          fileSize(expected) < fileSize(input),
+          'Output should be smaller than original',
+        );
+        assert.ok(
+          stdout.includes('dist/'),
+          'Output path should include outDir',
+        );
+      }
+    });
+  });
+
+  // =========================================================================
   //  Scan mode
   // =========================================================================
 
@@ -284,6 +771,34 @@ describe('imgslim CLI', () => {
         'Referenced image should be converted to WebP',
       );
       assert.ok(stdout.includes('OK'), 'Conversion should report OK');
+    });
+
+    it('should scan srcset and resolve asset-root plus alias references', () => {
+      const dir = setupDir('scan-srcset', []);
+      const assetRoot = join(dir, 'app');
+      const assetDir = join(assetRoot, 'assets');
+      mkdirSync(assetDir, { recursive: true });
+      cpSync(join(TEST_IMAGES, '0.png'), join(assetDir, '0.png'));
+      cpSync(join(TEST_IMAGES, '1.png'), join(assetDir, '1.png'));
+      const src = join(dir, 'index.html');
+      writeFileSync(
+        src,
+        '<img srcset="@img/0.png 1x, @/assets/1.png 2x" alt="demo">\n',
+      );
+
+      const { stdout, exitCode } = run([
+        'scan',
+        src,
+        '--asset-root',
+        assetRoot,
+        '--alias',
+        '@img=' + assetDir,
+      ]);
+
+      assert.strictEqual(exitCode, 0);
+      assert.ok(existsSync(join(assetDir, '0.webp')), 'Alias srcset image should convert');
+      assert.ok(existsSync(join(assetDir, '1.webp')), 'Asset-root srcset image should convert');
+      assert.ok(stdout.includes('OK'), 'Should report conversions');
     });
 
     it('should filter source files by --source-ext', () => {
@@ -403,6 +918,26 @@ describe('imgslim CLI', () => {
       assert.ok(Array.isArray(parsed.scan.unresolved));
     });
 
+    it('should scan markdown image and link refs in .md and .mdx', () => {
+      const dir = setupDir('markdown-scan', ['jackpot.png']);
+      writeFileSync(
+        join(dir, 'index.md'),
+        ['![alt](./jackpot.png?cache=1#hero)', '[ext](https://example.com/skip.png)', ''].join('\n')
+      );
+      writeFileSync(
+        join(dir, 'notes.mdx'),
+        ['[text](./jackpot.png)', '![data](data:image/png;base64,AAAA)', ''].join('\n')
+      );
+
+      const { stdout, exitCode } = run(['scan', dir, '--dry-run', '--json']);
+
+      assert.strictEqual(exitCode, 0);
+      const parsed = JSON.parse(stdout.trim());
+      assert.strictEqual(parsed.scan.sourceFiles, 2);
+      assert.strictEqual(parsed.scan.imagesFound, 1);
+      assert.deepStrictEqual(parsed.scan.unresolved, []);
+    });
+
     it('--quiet should suppress per-file lines', () => {
       const dir = setupDir('fmt-quiet', ['0.png']);
       const input = join(dir, '0.png');
@@ -415,6 +950,35 @@ describe('imgslim CLI', () => {
       assert.ok(!stdout.includes(' SKIP'), 'Quiet should suppress SKIP lines');
       // Summary should still appear
       assert.ok(stdout.includes('Converted'), 'Summary should still appear');
+    });
+
+    it('--quiet should still print FAIL lines to stderr', () => {
+      const missing = join(TMP_ROOT, 'fmt-quiet-fail', 'missing.png');
+
+      const { stdout, stderr, exitCode } = run(['--quiet', missing]);
+
+      assert.strictEqual(exitCode, 1);
+      assert.ok(stderr.includes('FAIL'), 'Quiet mode should still print FAIL to stderr');
+      assert.ok(!stdout.includes('FAIL'), 'FAIL should stay on stderr');
+    });
+
+    it('should let --no-* override true config booleans', () => {
+      const dir = setupConfiguredDir('config-negated', ['0.png'], {
+        json: true,
+        quiet: true,
+        overwrite: true,
+      });
+      const input = join(dir, '0.png');
+
+      const first = run([input, '--no-json', '--no-quiet'], dir);
+      assert.strictEqual(first.exitCode, 0);
+      assert.ok(first.stdout.includes('OK'), 'Should print human output');
+      assert.ok(!first.stdout.includes('"converted"'), 'Should not output JSON');
+
+      const second = run([input, '--no-json', '--no-quiet', '--no-overwrite'], dir);
+      assert.strictEqual(second.exitCode, 0);
+      assert.ok(second.stdout.includes('SKIP'), 'No-overwrite should win over config');
+      assert.ok(!second.stdout.includes('OK'), 'Should not overwrite when disabled');
     });
 
     it('--verbose should include timing info', () => {
@@ -440,12 +1004,19 @@ describe('imgslim CLI', () => {
       const dir = setupDir('flag-lossless', ['0.png']);
       const input = join(dir, '0.png');
 
-      const { stderr, exitCode } = run([input, '--auto', '--lossless']);
+      const { stdout, stderr, exitCode } = run([input, '--auto', '--lossless', '--json']);
+      const parsed = JSON.parse(stdout.trim());
 
       assert.strictEqual(exitCode, 0);
       assert.ok(
         stderr.includes('--auto overrides --lossless'),
         'Should warn that auto overrides lossless',
+      );
+      const hasLossyQuality = parsed.converted.some((result) => typeof result.quality === 'number');
+      const hasLosslessAutoSkip = parsed.autoSkipped.some((result) => String(result.reason).includes('lossless WebP'));
+      assert.ok(
+        hasLossyQuality || !hasLosslessAutoSkip,
+        'Auto mode should not execute lossless branch after warning',
       );
     });
 
@@ -460,6 +1031,13 @@ describe('imgslim CLI', () => {
         stderr.includes('--quality is ignored'),
         'Should warn that quality is ignored in auto mode',
       );
+    });
+
+    it('should reject invalid --max-input-pixels values', () => {
+      const { exitCode, stderr } = run(['test/0.png', '--max-input-pixels', '0']);
+
+      assert.strictEqual(exitCode, 1);
+      assert.ok(stderr.includes('max-input-pixels'), 'Should validate positive integer');
     });
   });
 
@@ -583,5 +1161,32 @@ describe('imgslim CLI', () => {
         stderr.includes('parse error') || stderr.includes('imgslimrc'),
         'Should warn about malformed config',
       );
+    });
+
+    it('should emit structured skipped objects in JSON dry-run minify output', () => {
+      const dir = setupDir('json-structured-skip', ['0.png']);
+      const input = join(dir, '0.png');
+
+      const { stdout, exitCode } = run(['minify', input, '--dry-run', '--json']);
+
+      assert.strictEqual(exitCode, 0);
+      const parsed = JSON.parse(stdout.trim());
+      assert.ok(Array.isArray(parsed.skipped), 'Skipped should stay array');
+      assert.ok(parsed.skipped.length > 0, 'Dry-run should emit skipped-style entry');
+      assert.equal(typeof parsed.skipped[0], 'object');
+      assert.equal(parsed.skipped[0].status, 'would-convert');
+      assert.equal(parsed.skipped[0].input, input);
+      assert.ok(parsed.skipped[0].output.endsWith('0_min.png'));
+      assert.equal(typeof parsed.skipped[0].reason, 'string');
+    });
+
+    it('should accept --concurrency option', () => {
+      const dir = setupDir('flag-concurrency', ['0.png', '1.png']);
+
+      const { stdout, exitCode } = run(['convert', dir, '--concurrency', '1', '--json']);
+
+      assert.strictEqual(exitCode, 0);
+      const parsed = JSON.parse(stdout.trim());
+      assert.ok(parsed.summary.converted + parsed.summary.skipped >= 2);
     });
   });

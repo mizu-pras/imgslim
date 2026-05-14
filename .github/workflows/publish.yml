@@ -21,6 +21,8 @@ jobs:
       - run: npm ci
       - run: npm run build
       - run: npm test
+      - run: npm pack --dry-run
+      - run: PACKAGE_TGZ=$(npm pack) && mkdir smoke && cd smoke && npm init -y && npm install ../$PACKAGE_TGZ && npx imgslim --help
 
       - run: npm publish --provenance --access public
         env:

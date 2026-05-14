@@ -41,3 +41,14 @@ Respond in caveman. Super short. Super direct. Cut fillers. keep technical subst
 Drop articles (a, an, the, etc), fillers (just, really, basically, actually, etc) and pleasantries (sure, certainly, happy to, etc).
 No hedging. Fragments fine. Short synonyms.
 Technical terms stay exact. Code blocks unchanged.
+
+## Repository Map
+
+A full codemap is available at `codemap.md` in the project root.
+
+Before working on any task, read `codemap.md` to understand:
+- Project architecture and entry points
+- Directory responsibilities and design patterns
+- Data flow and integration points between modules
+
+For deep work on a specific folder, also read that folder's `codemap.md`.

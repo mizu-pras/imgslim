@@ -1,10 +1,13 @@
-import { readdirSync, statSync, existsSync, mkdirSync, realpathSync } from "node:fs";
-import { stat, mkdir, writeFile, rename } from "node:fs/promises";
+import { existsSync } from "node:fs";
+import { chmod, lstat, stat, mkdir, writeFile, rename, unlink } from "node:fs/promises";
 import { join, extname, basename, dirname } from "node:path";
 import sharp from "sharp";
 import { randomBytes } from "node:crypto";
+import { performance } from "node:perf_hooks";
+import { walkMatchingFiles } from "./file-walker";
 
 export const SUPPORTED_EXTENSIONS = new Set([".png", ".jpg", ".jpeg", ".svg"]);
+const MINIFY_CANDIDATE_EXTENSIONS = new Set([".png", ".jpg", ".jpeg", ".svg", ".webp"]);
 
 export interface OptimizerOptions {
   outDir?: string;
@@ -13,6 +16,12 @@ export interface OptimizerOptions {
   recursive: boolean;
   overwrite: boolean;
   auto: boolean;
+  concurrency: number;
+  maxInputPixels: number;
+  mode?: "convert" | "minify";
+  minifyDryRun?: boolean;
+  minifySuffix?: string;
+  minifyLosslessOnly?: boolean;
   onProgress?: (file: string, current: number, total: number) => void;
 }
 
@@ -22,6 +31,14 @@ export interface ConversionResult {
   inputSize: number;
   outputSize: number;
   quality?: number;
+  durationMs: number;
+}
+
+export interface SkippedResult {
+  status: "skipped" | "would-convert";
+  input: string;
+  output?: string;
+  reason: string;
 }
 
 export interface AutoSkipResult {
@@ -31,7 +48,7 @@ export interface AutoSkipResult {
 
 export interface OptimizerStats {
   converted: ConversionResult[];
-  skipped: string[];
+  skipped: SkippedResult[];
   autoSkipped: AutoSkipResult[];
   failed: { path: string; error: string }[];
   totalBytesSaved: number;
@@ -41,58 +58,23 @@ export function isImageFile(filePath: string): boolean {
   return SUPPORTED_EXTENSIONS.has(extname(filePath).toLowerCase());
 }
 
+function isMinifyCandidateFile(filePath: string): boolean {
+  return MINIFY_CANDIDATE_EXTENSIONS.has(extname(filePath).toLowerCase());
+}
+
 function findImageFiles(
   inputPath: string,
   recursive: boolean,
-  visited: Set<string> = new Set()
+  isSupportedFile: (filePath: string) => boolean = isImageFile
 ): string[] {
-  const results: string[] = [];
+  return walkMatchingFiles(inputPath, {
+    recursive,
+    shouldIncludeFile: isSupportedFile,
+  });
+}
 
-  try {
-    const stats = statSync(inputPath);
-
-    // Detect symlink cycles using real path
-    let realPath: string;
-    try {
-      realPath = realpathSync(inputPath);
-    } catch {
-      return results; // broken symlink — skip silently
-    }
-    if (visited.has(realPath)) return results;
-    visited.add(realPath);
-
-    if (stats.isFile()) {
-      if (isImageFile(inputPath)) {
-        results.push(inputPath);
-      }
-    } else if (stats.isDirectory()) {
-      const entries = readdirSync(inputPath, { withFileTypes: true });
-      for (const entry of entries) {
-        const fullPath = join(inputPath, entry.name);
-
-        // Resolve symlinks to determine real file/dir type
-        let resolvedStats: ReturnType<typeof statSync> | null;
-        try {
-          resolvedStats = entry.isSymbolicLink() ? statSync(fullPath) : null;
-        } catch {
-          continue; // broken symlink — skip
-        }
-        const isDir = resolvedStats ? resolvedStats.isDirectory() : entry.isDirectory();
-        const isFile = resolvedStats ? resolvedStats.isFile() : entry.isFile();
-
-        if (isFile && isImageFile(fullPath)) {
-          results.push(fullPath);
-        } else if (isDir && recursive) {
-          results.push(...findImageFiles(fullPath, recursive, visited));
-        }
-      }
-    }
-  } catch (err: unknown) {
-    // path doesn't exist or is inaccessible — will be reported as failed
-    throw err;
-  }
-
-  return results;
+function createSharpInstance(inputPath: string, options: OptimizerOptions): sharp.Sharp {
+  return sharp(inputPath, { limitInputPixels: options.maxInputPixels });
 }
 
 function resolveOutputPath(
@@ -122,12 +104,35 @@ async function atomicWriteFile(outputPath: string, data: Buffer): Promise<void> 
 
 async function atomicSharpToFile(
   inputPath: string,
+  options: OptimizerOptions,
   webpOptions: sharp.WebpOptions,
   outputPath: string
 ): Promise<void> {
   const tmp = tmpPathFor(outputPath);
-  await sharp(inputPath).webp(webpOptions).toFile(tmp);
+  await createSharpInstance(inputPath, options).webp(webpOptions).toFile(tmp);
   await rename(tmp, outputPath);
+}
+
+function emptyStats(): OptimizerStats {
+  return {
+    converted: [],
+    skipped: [],
+    autoSkipped: [],
+    failed: [],
+    totalBytesSaved: 0,
+  };
+}
+
+function mergeStats(target: OptimizerStats, source: OptimizerStats): void {
+  target.converted.push(...source.converted);
+  target.skipped.push(...source.skipped);
+  target.autoSkipped.push(...source.autoSkipped);
+  target.failed.push(...source.failed);
+  target.totalBytesSaved += source.totalBytesSaved;
+}
+
+function createSkip(input: string, reason: string, output?: string, status: SkippedResult["status"] = "skipped"): SkippedResult {
+  return { status, input, output, reason };
 }
 
 async function analyzeAndConvert(
@@ -135,17 +140,18 @@ async function analyzeAndConvert(
   options: OptimizerOptions,
   outputPath: string,
   inputSize: number,
-  stats: OptimizerStats
-): Promise<void> {
+  startedAt: number
+): Promise<OptimizerStats> {
+  const stats = emptyStats();
   // Lossless mode: analyze once and skip if not smaller
   if (options.lossless) {
-    const buf = await sharp(inputPath).webp({ lossless: true }).toBuffer();
+    const buf = await createSharpInstance(inputPath, options).webp({ lossless: true }).toBuffer();
     if (buf.length >= inputSize) {
       stats.autoSkipped.push({
         path: inputPath,
         reason: `lossless WebP not smaller than original (${buf.length} >= ${inputSize} bytes)`,
       });
-      return;
+      return stats;
     }
     await atomicWriteFile(outputPath, buf);
     stats.converted.push({
@@ -153,47 +159,38 @@ async function analyzeAndConvert(
       output: outputPath,
       inputSize,
       outputSize: buf.length,
+      durationMs: Math.round(performance.now() - startedAt),
     });
     stats.totalBytesSaved += inputSize - buf.length;
-    return;
+    return stats;
   }
 
-  // Lossy mode: test candidate qualities [90, 80, 70, 60] with limited concurrency
+  // Lossy mode: test candidate qualities [90, 80, 70, 60] sequentially
   const qualities = [90, 80, 70, 60];
-  const candidates: { quality: number; buffer: Buffer; size: number }[] = [];
-  await processPool(qualities, 2, async (q) => {
+  let bestCandidate: { quality: number; buffer: Buffer; size: number } | null = null;
+
+  for (const q of qualities) {
     try {
-      const buf = await sharp(inputPath).webp({ quality: q }).toBuffer();
-      candidates.push({ quality: q, buffer: buf, size: buf.length });
+      const buf = await createSharpInstance(inputPath, options).webp({ quality: q }).toBuffer();
+      const candidate = { quality: q, buffer: buf, size: buf.length };
+      if (candidate.size <= inputSize * 0.9) {
+        await atomicWriteFile(outputPath, candidate.buffer);
+        stats.converted.push({
+          input: inputPath,
+          output: outputPath,
+          inputSize,
+          outputSize: candidate.size,
+          quality: candidate.quality,
+          durationMs: Math.round(performance.now() - startedAt),
+        });
+        stats.totalBytesSaved += inputSize - candidate.size;
+        return stats;
+      }
+      if (candidate.size < inputSize && (!bestCandidate || candidate.size < bestCandidate.size)) {
+        bestCandidate = candidate;
+      }
     } catch {
       // individual quality failure shouldn't abort the rest
-    }
-  });
-
-  // Sort by quality descending for deterministic selection
-  candidates.sort((a, b) => b.quality - a.quality);
-
-  // Select highest quality with at least 10% size reduction
-  for (const c of candidates) {
-    if (c.size <= inputSize * 0.9) {
-      await atomicWriteFile(outputPath, c.buffer);
-      stats.converted.push({
-        input: inputPath,
-        output: outputPath,
-        inputSize,
-        outputSize: c.size,
-        quality: c.quality,
-      });
-      stats.totalBytesSaved += inputSize - c.size;
-      return;
-    }
-  }
-
-  // None meet 10% — pick the smallest candidate that is still smaller than original
-  let bestCandidate: (typeof candidates)[0] | null = null;
-  for (const c of candidates) {
-    if (c.size < inputSize && (!bestCandidate || c.size < bestCandidate.size)) {
-      bestCandidate = c;
     }
   }
 
@@ -205,6 +202,7 @@ async function analyzeAndConvert(
       inputSize,
       outputSize: bestCandidate.size,
       quality: bestCandidate.quality,
+      durationMs: Math.round(performance.now() - startedAt),
     });
     stats.totalBytesSaved += inputSize - bestCandidate.size;
   } else {
@@ -213,21 +211,22 @@ async function analyzeAndConvert(
       reason: `no WebP candidate smaller than original (${inputSize} bytes)`,
     });
   }
+
+  return stats;
 }
 
 async function convertFile(
   inputPath: string,
-  options: OptimizerOptions,
-  stats: OptimizerStats
-): Promise<void> {
+  options: OptimizerOptions
+): Promise<OptimizerStats> {
+  const stats = emptyStats();
+  const startedAt = performance.now();
   const outputPath = resolveOutputPath(inputPath, options.outDir);
 
   // Check if output already exists
   if (existsSync(outputPath) && !options.overwrite) {
-    stats.skipped.push(
-      `${inputPath} (output exists, use --overwrite to replace)`
-    );
-    return;
+    stats.skipped.push(createSkip(inputPath, "output exists, use --overwrite to replace", outputPath));
+    return stats;
   }
 
   // Ensure output directory exists
@@ -242,13 +241,13 @@ async function convertFile(
 
     // Auto mode: analyze candidates and pick the best one
     if (options.auto) {
-      await analyzeAndConvert(inputPath, options, outputPath, inputSize, stats);
-      return;
+      return analyzeAndConvert(inputPath, options, outputPath, inputSize, startedAt);
     }
 
     // Default mode: single pass with specified quality
     await atomicSharpToFile(
       inputPath,
+      options,
       { quality: options.quality, lossless: options.lossless },
       outputPath
     );
@@ -261,6 +260,7 @@ async function convertFile(
       output: outputPath,
       inputSize,
       outputSize,
+      durationMs: Math.round(performance.now() - startedAt),
     });
     const bytesSaved = inputSize - outputSize;
     if (bytesSaved > 0) {
@@ -270,18 +270,147 @@ async function convertFile(
     const message = err instanceof Error ? err.message : String(err);
     stats.failed.push({ path: inputPath, error: message });
   }
+
+  return stats;
+}
+
+function minifyOutputPath(inputPath: string, suffix: string, outDir?: string): string {
+  const ext = extname(inputPath);
+  const base = basename(inputPath, ext);
+  const outputName = `${base}${suffix}${ext}`;
+  if (outDir) {
+    return join(outDir, outputName);
+  }
+  return join(dirname(inputPath), outputName);
+}
+
+async function minifyFile(
+  inputPath: string,
+  options: OptimizerOptions
+): Promise<OptimizerStats> {
+  const stats = emptyStats();
+  const startedAt = performance.now();
+  const ext = extname(inputPath).toLowerCase();
+  const suffix = options.minifySuffix ?? "_min";
+  let tmp: string | undefined;
+
+  // MVP: PNG only
+  if (ext !== ".png") {
+    stats.skipped.push(createSkip(inputPath, "unsupported format for minify, only PNG supported"));
+    return stats;
+  }
+
+  // Skip files whose basename already ends with active suffix
+  const base = basename(inputPath, ext);
+  if (base.endsWith(suffix)) {
+    stats.skipped.push(createSkip(inputPath, `already has suffix "${suffix}", skipping`));
+    return stats;
+  }
+
+  const outputPath = minifyOutputPath(inputPath, suffix, options.outDir);
+
+  // Lightweight symlink check (runs even in dry-run)
+  let isSymlink = false;
+  try {
+    const linkStat = existsSync(inputPath) ? await lstat(inputPath) : null;
+    isSymlink = linkStat !== null && linkStat.isSymbolicLink();
+  } catch {
+    // ignore lstat errors
+  }
+  if (isSymlink) {
+    stats.skipped.push(createSkip(inputPath, "symlink skipped for safe minify", outputPath));
+    return stats;
+  }
+
+  // Check if output already exists
+  if (existsSync(outputPath) && !options.overwrite) {
+    const msg = "output exists, use --overwrite to replace";
+    if (options.minifyDryRun) {
+      stats.skipped.push(createSkip(inputPath, msg, outputPath));
+    } else {
+      stats.skipped.push(createSkip(inputPath, msg, outputPath));
+    }
+    return stats;
+  }
+
+  // Dry-run: report would-convert without processing
+  if (options.minifyDryRun) {
+    stats.skipped.push(createSkip(inputPath, "would convert in dry-run", outputPath, "would-convert"));
+    return stats;
+  }
+
+  try {
+    // Ensure output directory exists
+    const outputDir = dirname(outputPath);
+    if (!existsSync(outputDir)) {
+      await mkdir(outputDir, { recursive: true });
+    }
+
+    const inputStat = await stat(inputPath);
+    const inputSize = inputStat.size;
+
+    const metadata = await createSharpInstance(inputPath, options).metadata();
+    if ((metadata.pages ?? 1) > 1) {
+      stats.skipped.push(createSkip(inputPath, "animated PNG skipped for safe minify", outputPath));
+      return stats;
+    }
+
+    tmp = tmpPathFor(outputPath);
+
+    const pngOpts: sharp.PngOptions = options.minifyLosslessOnly
+      ? { compressionLevel: 9, effort: 10 }
+      : { compressionLevel: 9, palette: true, effort: 10 };
+
+    await createSharpInstance(inputPath, options).png(pngOpts).toFile(tmp);
+
+    const tmpStat = await stat(tmp);
+    const outputSize = tmpStat.size;
+
+    if (outputSize < inputSize) {
+      await chmod(tmp, inputStat.mode);
+      await rename(tmp, outputPath);
+      tmp = undefined;
+      stats.converted.push({
+        input: inputPath,
+        output: outputPath,
+        inputSize,
+        outputSize,
+        durationMs: Math.round(performance.now() - startedAt),
+      });
+      stats.totalBytesSaved += inputSize - outputSize;
+    } else {
+      await unlink(tmp);
+      tmp = undefined;
+      stats.autoSkipped.push({
+        path: inputPath,
+        reason: `minified not smaller than original (${outputSize} >= ${inputSize} bytes)`,
+      });
+    }
+  } catch (err: unknown) {
+    if (tmp) {
+      try {
+        await unlink(tmp);
+      } catch {
+        // best-effort cleanup
+      }
+    }
+    const message = err instanceof Error ? err.message : String(err);
+    stats.failed.push({ path: inputPath, error: message });
+  }
+
+  return stats;
 }
 
 async function processPool<T>(
   items: T[],
   concurrency: number,
-  fn: (item: T) => Promise<void>
+  fn: (item: T, index: number) => Promise<void>
 ): Promise<void> {
   let i = 0;
   const next = async (): Promise<void> => {
     while (i < items.length) {
       const idx = i++;
-      await fn(items[idx]);
+      await fn(items[idx], idx);
     }
   };
   const workers = Math.min(concurrency, items.length);
@@ -292,19 +421,15 @@ export async function optimize(
   inputs: string[],
   options: OptimizerOptions
 ): Promise<OptimizerStats> {
-  const stats: OptimizerStats = {
-    converted: [],
-    skipped: [],
-    autoSkipped: [],
-    failed: [],
-    totalBytesSaved: 0,
-  };
+  const stats = emptyStats();
 
   // Collect all image files
   const files: string[] = [];
+  const isMinify = options.mode === "minify";
+  const isSupportedFile = isMinify ? isMinifyCandidateFile : isImageFile;
   for (const input of inputs) {
     try {
-      const found = findImageFiles(input, options.recursive);
+      const found = findImageFiles(input, options.recursive, isSupportedFile);
       files.push(...found);
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : String(err);
@@ -312,14 +437,66 @@ export async function optimize(
     }
   }
 
-  // Convert files with concurrency (4 parallel sharp calls)
+  // For minify: dedupe + skip files whose basename already ends with active suffix
+  // (avoids double-suffix on repeated runs) + detect output path collisions
+  let filesToProcess: string[];
+  if (isMinify) {
+    const suffix = options.minifySuffix ?? "_min";
+    const unique = Array.from(new Set(files));
+    // First filter by suffix
+    let filtered = unique.filter((f) => {
+      const ext = extname(f);
+      const base = basename(f, ext);
+      if (base.endsWith(suffix)) {
+        stats.skipped.push(createSkip(f, `already has suffix "${suffix}", skipping`));
+        return false;
+      }
+      return true;
+    });
+    // Collision detection: if two input files map to same output path,
+    // skip later duplicates
+    const seenOutputs = new Set<string>();
+    filesToProcess = filtered.filter((f) => {
+      const outPath = minifyOutputPath(f, suffix, options.outDir);
+      if (seenOutputs.has(outPath)) {
+        stats.skipped.push(createSkip(f, `output collision with earlier input (${outPath})`, outPath));
+        return false;
+      }
+      seenOutputs.add(outPath);
+      return true;
+    });
+  } else {
+    const seenOutputs = new Set<string>();
+    filesToProcess = files.filter((file) => {
+      const outPath = resolveOutputPath(file, options.outDir);
+      if (seenOutputs.has(outPath)) {
+        stats.skipped.push(createSkip(file, `output collision with earlier input (${outPath})`, outPath));
+        return false;
+      }
+      seenOutputs.add(outPath);
+      return true;
+    });
+  }
+
+  // Convert/minify files with deterministic aggregation order
   let completed = 0;
-  const total = files.length;
-  await processPool(files, 4, async (file) => {
+  const total = filesToProcess.length;
+  const resultsByIndex = new Array<OptimizerStats>(total);
+  await processPool(filesToProcess, options.concurrency, async (file, index) => {
     const current = ++completed;
     options.onProgress?.(file, current, total);
-    await convertFile(file, options, stats);
+    if (isMinify) {
+      resultsByIndex[index] = await minifyFile(file, options);
+    } else {
+      resultsByIndex[index] = await convertFile(file, options);
+    }
   });
+
+  for (const fileStats of resultsByIndex) {
+    if (fileStats) {
+      mergeStats(stats, fileStats);
+    }
+  }
 
   // Clear progress line
   if (total > 0 && options.onProgress) {

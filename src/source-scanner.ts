@@ -1,6 +1,7 @@
-import { existsSync, readdirSync, statSync, realpathSync } from "node:fs";
+import { existsSync, statSync } from "node:fs";
 import { readFile } from "node:fs/promises";
-import { dirname, extname, isAbsolute, join, resolve } from "node:path";
+import { dirname, extname, isAbsolute, resolve } from "node:path";
+import { walkMatchingFiles } from "./file-walker";
 
 const DEFAULT_SOURCE_EXTENSIONS = new Set([
   ".html",
@@ -21,6 +22,8 @@ const DEFAULT_SOURCE_EXTENSIONS = new Set([
 ]);
 
 const IMAGE_REFERENCE_RE = /(?:url\(\s*['"]?([^'")\s]+\.(?:png|jpe?g|webp|avif|tiff?|svg))(?:[?#][^'")\s]*)?['"]?\s*\)|["'`]([^"'`]+\.(?:png|jpe?g|webp|avif|tiff?|svg))(?:[?#][^"'`]*)?["'`])/gi;
+const MARKDOWN_REFERENCE_RE = /!?\[[^\]]*\]\(([^)]+)\)/gi;
+const SRCSET_REFERENCE_RE = /\b(?:srcset|imagesrcset)\s*=\s*(["'`])([\s\S]*?)\1/gi;
 
 const IGNORED_DIRS = new Set([
   ".git",
@@ -35,6 +38,8 @@ const IGNORED_DIRS = new Set([
 export interface ScanOptions {
   recursive: boolean;
   sourceExtensions?: string[];
+  assetRoot?: string;
+  aliases?: Record<string, string>;
   onProgress?: (file: string, current: number, total: number) => void;
 }
 
@@ -61,60 +66,12 @@ function isSourceFile(filePath: string, extensions: Set<string>): boolean {
   return extensions.has(extname(filePath).toLowerCase());
 }
 
-function collectSourceFiles(
-  inputPath: string,
-  options: ScanOptions,
-  extensions: Set<string>,
-  visited: Set<string> = new Set()
-): string[] {
-  const stats = statSync(inputPath);
-
-  // Detect symlink cycles using real path
-  let realPath: string;
-  try {
-    realPath = realpathSync(inputPath);
-  } catch {
-    return []; // broken symlink — skip silently
-  }
-  if (visited.has(realPath)) return [];
-  visited.add(realPath);
-
-  if (stats.isFile()) {
-    return isSourceFile(inputPath, extensions) ? [inputPath] : [];
-  }
-
-  if (!stats.isDirectory()) {
-    return [];
-  }
-
-  const files: string[] = [];
-  const entries = readdirSync(inputPath, { withFileTypes: true });
-
-  for (const entry of entries) {
-    const fullPath = join(inputPath, entry.name);
-
-    // Resolve symlinks: stat the entry to find the real file/dir type
-    let resolvedStats: ReturnType<typeof statSync> | null;
-    try {
-      resolvedStats = entry.isSymbolicLink() ? statSync(fullPath) : null;
-    } catch {
-      continue; // broken symlink — skip
-    }
-    const isDir = resolvedStats ? resolvedStats.isDirectory() : entry.isDirectory();
-    const isFile = resolvedStats ? resolvedStats.isFile() : entry.isFile();
-
-    if (isDir && IGNORED_DIRS.has(entry.name)) {
-      continue;
-    }
-
-    if (isFile && isSourceFile(fullPath, extensions)) {
-      files.push(fullPath);
-    } else if (isDir && options.recursive) {
-      files.push(...collectSourceFiles(fullPath, options, extensions, visited));
-    }
-  }
-
-  return files;
+function collectSourceFiles(inputPath: string, options: ScanOptions, extensions: Set<string>): string[] {
+  return walkMatchingFiles(inputPath, {
+    recursive: options.recursive,
+    ignoredDirs: IGNORED_DIRS,
+    shouldIncludeFile: (filePath) => isSourceFile(filePath, extensions),
+  });
 }
 
 function isExternalReference(reference: string): boolean {
@@ -125,19 +82,82 @@ function cleanReference(reference: string): string {
   return reference
     .trim()
     .replace(/^url\(\s*/i, "")
-    .replace(/^['"`]+|['"`)]+$/g, "");
+    .replace(/^['"`]+|['"`)]+$/g, "")
+    .replace(/^<|>$/g, "");
 }
 
-function resolveReference(sourceFile: string, reference: string): string {
-  const cleaned = cleanReference(reference);
+function stripReferenceModifiers(reference: string): string {
+  return reference.replace(/[?#].*$/, "");
+}
+
+function cleanMarkdownReference(reference: string): string {
+  return cleanReference(reference).split(/\s+/)[0] ?? "";
+}
+
+function extractSrcsetReferences(value: string): string[] {
+  return value
+    .split(",")
+    .map((entry) => entry.trim())
+    .filter(Boolean)
+    .map((entry) => entry.split(/\s+/)[0])
+    .filter(Boolean);
+}
+
+function resolveAliasReference(reference: string, aliases: Record<string, string> | undefined): string | null {
+  if (!aliases) return null;
+
+  const matches = Object.entries(aliases)
+    .filter(([prefix]) => reference.startsWith(prefix))
+    .sort((a, b) => b[0].length - a[0].length);
+
+  const match = matches[0];
+  if (!match) return null;
+
+  const [prefix, targetDir] = match;
+  return resolve(process.cwd(), targetDir, reference.slice(prefix.length).replace(/^\/+/, ""));
+}
+
+function resolveReference(sourceFile: string, reference: string, options: ScanOptions): string {
+  const cleaned = stripReferenceModifiers(cleanReference(reference));
+  const aliasResolved = resolveAliasReference(cleaned, options.aliases);
+  if (aliasResolved) {
+    return aliasResolved;
+  }
+
+  if (cleaned.startsWith("@/")) {
+    const assetRoot = options.assetRoot ? resolve(process.cwd(), options.assetRoot) : process.cwd();
+    return resolve(assetRoot, cleaned.slice(2));
+  }
 
   if (isAbsolute(cleaned)) {
-    const fromCwd = resolve(process.cwd(), `.${cleaned}`);
+    const root = options.assetRoot ? resolve(process.cwd(), options.assetRoot) : process.cwd();
+    const fromCwd = resolve(root, `.${cleaned}`);
     if (existsSync(fromCwd)) return fromCwd;
     return cleaned;
   }
 
   return resolve(dirname(sourceFile), cleaned);
+}
+
+function recordReference(
+  sourceFile: string,
+  reference: string | undefined,
+  options: ScanOptions,
+  images: Set<string>,
+  unresolved: SourceScanResult["unresolved"],
+  markdown = false
+): void {
+  if (!reference) return;
+
+  const cleaned = markdown ? cleanMarkdownReference(reference) : cleanReference(reference);
+  if (!cleaned || isExternalReference(cleaned)) return;
+
+  const imagePath = resolveReference(sourceFile, cleaned, options);
+  if (existsSync(imagePath) && statSync(imagePath).isFile()) {
+    images.add(imagePath);
+  } else {
+    unresolved.push({ source: sourceFile, reference: cleaned });
+  }
 }
 
 export async function scanSourceCodeForImages(
@@ -174,14 +194,23 @@ export async function scanSourceCodeForImages(
     try {
       const content = await readFile(sourceFile, "utf8");
       for (const match of content.matchAll(IMAGE_REFERENCE_RE)) {
-        const reference = match[1] ?? match[2];
-        if (!reference || isExternalReference(reference)) continue;
+        recordReference(sourceFile, match[1] ?? match[2], options, images, result.unresolved);
+      }
 
-        const imagePath = resolveReference(sourceFile, reference);
-        if (existsSync(imagePath) && statSync(imagePath).isFile()) {
-          images.add(imagePath);
-        } else {
-          result.unresolved.push({ source: sourceFile, reference });
+      for (const match of content.matchAll(MARKDOWN_REFERENCE_RE)) {
+        recordReference(sourceFile, match[1], options, images, result.unresolved, true);
+      }
+
+      for (const match of content.matchAll(SRCSET_REFERENCE_RE)) {
+        for (const reference of extractSrcsetReferences(match[2])) {
+          if (!reference || isExternalReference(reference)) continue;
+
+          const imagePath = resolveReference(sourceFile, reference, options);
+          if (existsSync(imagePath) && statSync(imagePath).isFile()) {
+            images.add(imagePath);
+          } else {
+            result.unresolved.push({ source: sourceFile, reference });
+          }
         }
       }
     } catch (err: unknown) {

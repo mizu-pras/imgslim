@@ -9,7 +9,11 @@ export interface ImgSlimConfig {
   lossless?: boolean;
   overwrite?: boolean;
   auto?: boolean;
+  concurrency?: number;
+  maxInputPixels?: number;
   sourceExt?: string;
+  assetRoot?: string;
+  aliases?: Record<string, string>;
   verbose?: boolean;
   quiet?: boolean;
   json?: boolean;
@@ -37,13 +41,43 @@ function validateConfig(raw: unknown): ImgSlimConfig {
         cleaned.quality = value;
         break;
       }
+      case "concurrency":
+      case "maxInputPixels": {
+        if (typeof value !== "number" || !Number.isInteger(value) || value < 1) {
+          process.stderr.write(`Warning: .imgslimrc: "${key}" must be a positive integer, ignoring value "${String(value)}"\n`);
+          continue;
+        }
+        cleaned[key] = value;
+        break;
+      }
       case "outDir":
-      case "sourceExt": {
+      case "sourceExt":
+      case "assetRoot": {
         if (typeof value !== "string") {
           process.stderr.write(`Warning: .imgslimrc: "${key}" must be a string, ignoring\n`);
           continue;
         }
         cleaned[key] = value;
+        break;
+      }
+      case "aliases": {
+        if (value === null || typeof value !== "object" || Array.isArray(value)) {
+          process.stderr.write("Warning: .imgslimrc: \"aliases\" must be an object of prefix-to-directory mappings, ignoring\n");
+          continue;
+        }
+        const aliases: Record<string, string> = {};
+        let valid = true;
+        for (const [aliasKey, aliasValue] of Object.entries(value)) {
+          if (typeof aliasValue !== "string") {
+            process.stderr.write(`Warning: .imgslimrc: alias "${aliasKey}" must map to a string directory, ignoring aliases\n`);
+            valid = false;
+            break;
+          }
+          aliases[aliasKey] = aliasValue;
+        }
+        if (valid) {
+          cleaned.aliases = aliases;
+        }
         break;
       }
       default: {

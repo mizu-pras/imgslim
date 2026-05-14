@@ -1,13 +1,15 @@
 # ImgSlim
 
-Konversi gambar ke WebP dari command line. File lebih kecil, kualitas tetap.
+Konversi gambar ke WebP dan minify PNG dari command line. File lebih kecil, CLI sederhana.
 
-Dua cara penggunaan:
+Tiga cara penggunaan:
 
 1. **Konversi langsung** — arahkan ke gambar atau folder, dapatkan file `.webp`.
 2. **Pemindaian source code** — pindai kode untuk referensi gambar, konversi semua gambar yang ditemukan.
+3. **Minify** — kompres gambar PNG, output `_min.png` di samping original.
 
-> ImgSlim tidak pernah menghapus atau memodifikasi file original. `photo.png` tetap ada — kamu dapat `photo.webp` di sebelahnya.
+> Untuk konversi: ImgSlim tidak pernah menghapus atau memodifikasi file original. `photo.png` tetap ada — kamu dapat `photo.webp` di sebelahnya.
+> Untuk minify: ImgSlim membuat `_min.png` di samping original. Original tidak pernah dimodifikasi. Gunakan `--overwrite` untuk mengganti `_min.png` yang sudah ada.
 
 ---
 
@@ -20,6 +22,12 @@ Mengkonversi format berikut ke WebP:
 - `.svg`
 
 > **Tentang SVG:** Sharp melakukan rasterisasi SVG ke PNG terlebih dahulu, lalu di-encode ke WebP. Output-nya adalah bitmap — skalabilitas vektor hilang. Simpan SVG original jika kamu butuh rendering vektor murni.
+
+Minify format berikut tanpa mengubah format:
+
+- `.png` saja
+
+Input JPG, SVG, dan WebP dilewati di mode `minify` untuk saat ini.
 
 ---
 
@@ -45,6 +53,7 @@ imgslim --help
 
 ```bash
 imgslim photo.jpg                    # satu file → photo.webp
+imgslim convert photo.jpg            # command convert eksplisit
 imgslim hero.png banner.jpg logo.svg # banyak file
 imgslim ./images --recursive         # semua gambar di folder (dan subfolder)
 ```
@@ -53,6 +62,15 @@ imgslim ./images --recursive         # semua gambar di folder (dan subfolder)
 
 ```bash
 imgslim scan ./src --recursive
+```
+
+**Minify file PNG** — kompres PNG tanpa mengubah format:
+
+```bash
+imgslim minify photo.png               # membuat photo_min.png
+imgslim minify photo.png --dry-run     # pratinjau saja
+imgslim minify photo.png --suffix .opt # membuat photo.opt.png
+imgslim minify ./images --recursive    # minify semua PNG di folder
 ```
 
 Contoh: jika `./images/` berisi `logo.png`, `hero.jpg`, dan `draft.png` — tapi hanya `logo.png` dan `hero.jpg` yang muncul di HTML/CSS/JS — mode scan hanya mengkonversi dua itu. Mode langsung (`imgslim ./images`) mengkonversi ketiganya.
@@ -67,12 +85,16 @@ Gunakan saat kamu sudah tahu gambar mana yang ingin dikonversi.
 
 ```bash
 imgslim <file atau folder...>
+imgslim convert <file atau folder...>
 ```
+
+Command default dan `convert` melakukan hal yang sama. Bentuk default dipertahankan untuk backward compatibility.
 
 **Satu file**
 
 ```bash
 imgslim photo.jpg
+imgslim convert photo.jpg
 ```
 
 **Banyak file**
@@ -166,11 +188,102 @@ const image = "../images/banner.jpg";
 | `--dry-run` | Pratinjau apa yang akan dikonversi tanpa menulis file |
 | `--source-ext <exts>` | Hanya pindai ekstensi tertentu (mis. `ts,tsx,css`) |
 
+Scan juga menerima opsi konversi WebP: `--quality`, `--lossless`, `--overwrite`, `--auto`, dan `--recursive`.
+
 ---
 
-### Opsi Bersama
+### Minify
 
-Semua opsi berfungsi di kedua mode. Mode scan juga mendukung `--dry-run` dan `--source-ext` khusus.
+Kompres gambar PNG, output `_min.png` di samping original secara default. Original tidak pernah dimodifikasi.
+
+```bash
+imgslim minify photo.png
+```
+
+Hasil: `photo.png` tetap ada, `photo_min.png` dibuat.
+
+**Satu file**
+
+```bash
+imgslim minify photo.png
+```
+
+**Banyak file**
+
+```bash
+imgslim minify a.png b.png
+```
+
+**Folder (rekursif)**
+
+```bash
+imgslim minify ./images --recursive
+imgslim minify -r ./images
+```
+
+**Suffix kustom**
+
+```bash
+imgslim minify photo.png --suffix .optimized
+# Hasil: photo.optimized.png
+
+imgslim minify photo.png --suffix -small
+# Hasil: photo-small.png
+```
+
+**Output ke direktori**
+
+```bash
+imgslim minify photo.png --out-dir ./dist
+# Hasil: ./dist/photo_min.png
+```
+
+Jika banyak file dengan basename sama menargetkan output `--out-dir` yang sama, ImgSlim mempertahankan yang pertama dan melewati collision berikutnya.
+
+> **Format yang didukung:** PNG saja. JPG, SVG, dan WebP akan dilewati.
+>
+> **Keamanan:** menulis ke file temp dulu, membandingkan ukuran dengan original. File output dibuat hanya jika lebih kecil. Jika tidak lebih kecil, file temp dihapus dan tidak ada output yang dibuat.
+>
+> **Penting:** minify PNG memakai palette quantization (`palette: true`) secara default. Ini bisa mengurangi warna menjadi palet 256 warna dan membuang metadata. Gunakan `--lossless-only` untuk menghindari palette quantization. Pakai Git/backup jika original penting. Animated PNG dan symlink dilewati demi keamanan.
+
+**Opsi minify**
+
+| Opsi | Deskripsi |
+|---|---|
+| `-r, --recursive` | Pindai direktori secara rekursif |
+| `--dry-run` | Pratinjau apa yang akan dikonversi tanpa menulis file |
+| `--suffix <suffix>` | Sufiks output (default: `_min`) |
+| `-o, --out-dir <dir>` | Direktori output untuk file PNG terminify |
+| `--overwrite` | Ganti file output yang sudah ada (default: skip jika ada) |
+| `--lossless-only` | Hindari palette quantization untuk kualitas lossless |
+
+Aturan suffix:
+
+- Suffix default: `_min`
+- Suffix kosong tidak valid
+- Path separator (`/` atau `\`) tidak valid
+- File yang sudah berakhir dengan suffix aktif dilewati agar tidak membuat `photo_min_min.png`
+
+**Contoh dry-run**
+
+```bash
+imgslim minify photo.png --dry-run
+# Would convert:
+#   photo.png -> photo_min.png
+```
+
+**Contoh lossless-only**
+
+```bash
+imgslim minify photo.png --lossless-only
+# Menggunakan kompresi tanpa palette quantization (kualitas lossless)
+```
+
+---
+
+### Opsi Konversi
+
+Opsi ini berlaku untuk konversi langsung, `convert`, dan `scan`. Minify memiliki opsi sendiri (lihat di atas). Mode scan juga mendukung `--dry-run` dan `--source-ext` khusus.
 
 **Kualitas** (default: `80`)
 
@@ -199,7 +312,7 @@ imgslim photo.png --auto
 imgslim photo.png --overwrite
 ```
 
-> `--overwrite` hanya mempengaruhi output `.webp`. File original tidak pernah disentuh.
+> `--overwrite` hanya mempengaruhi output `.webp` (convert/scan) atau output `_min.png` (minify). File original tidak pernah dimodifikasi.
 
 **Rekursif** — pindai folder secara rekursif.
 
@@ -216,14 +329,22 @@ imgslim scan ./src --recursive
 
 ```
   OK  src/assets/logo.png -> src/assets/logo.webp  (42.1%, 18.4 KB) [q90]
+  OK  src/assets/logo.png -> src/assets/logo_min.png  (18.5%, 5.2 KB)
 ```
 
 | Status | Arti |
 |---|---|
-| `OK` | Berhasil dikonversi |
-| `SKIP` | Dilewati — output sudah ada, atau mode otomatis tidak menemukan manfaat |
+| `OK` | Berhasil dikonversi atau diminify |
+| `SKIP` | Dilewati — output sudah ada, format minify belum didukung, atau tidak ada kandidat lebih kecil |
 | `MISS` | Gambar direferensikan di source tapi file tidak ditemukan |
 | `FAIL` | Error saat membaca atau mengkonversi |
+
+Dry-run minify menampilkan rencana write tanpa membuat file:
+
+```txt
+Would convert:
+  src/assets/logo.png -> src/assets/logo_min.png
+```
 
 ### Ringkasan
 
@@ -337,10 +458,12 @@ Flag CLI selalu menimpa nilai konfigurasi.
 
 **Semua kunci yang tersedia**
 
+Config saat ini berlaku untuk output global dan default konversi/scan WebP. Opsi khusus minify (`suffix`, `lossless-only`, minify `out-dir`) masih CLI-only.
+
 | Kunci | Tipe | Deskripsi |
 |---|---|---|
 | `quality` | number | Kualitas WebP `0`–`100` |
-| `outDir` | string | Direktori output default |
+| `outDir` | string | Direktori output WebP default |
 | `recursive` | boolean | Selalu pindai direktori secara rekursif |
 | `lossless` | boolean | Gunakan WebP lossless |
 | `overwrite` | boolean | Selalu timpa `.webp` yang sudah ada |
@@ -378,6 +501,24 @@ imgslim ./images --recursive --quality 90
 imgslim ./images --recursive --overwrite
 ```
 
+**Pratinjau minify PNG**
+
+```bash
+imgslim minify ./images --recursive --dry-run
+```
+
+**Minify PNG ke folder terpisah**
+
+```bash
+imgslim minify ./images --recursive --out-dir ./optimized
+```
+
+**Minify PNG gaya lossless**
+
+```bash
+imgslim minify ./images --recursive --lossless-only
+```
+
 **Pipeline CI/CD**
 
 ```bash
@@ -388,7 +529,10 @@ imgslim ./images --recursive --json --quiet > report.json
 
 ## Hal yang Perlu Diketahui
 
-- **File original tidak pernah dihapus atau dimodifikasi.** Hanya file `.webp` yang dibuat.
+- **Konversi tidak pernah menghapus atau memodifikasi file original.** Hanya file `.webp` yang dibuat.
+- **Minify membuat `_min.png` di samping original.** File original tidak pernah dimodifikasi.
+- **Minify dengan `--out-dir` memakai nama output flat.** Basename duplikat dilewati untuk mencegah overwrite.
+- **Minify default bisa lossy.** Gunakan `--lossless-only` untuk menghindari palette quantization.
 - **File source code tidak pernah dimodifikasi.** Perintah scan hanya membacanya.
 - **Mode scan hanya mendeteksi referensi string biasa.** Ekspresi dinamis seperti `` `./img${n}.png` `` tidak ditemukan.
 - **URL remote** (`https://...`) dan **data URI** (`data:...`) diabaikan.

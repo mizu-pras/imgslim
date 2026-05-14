@@ -1,0 +1,39 @@
+{
+  "metadata": {
+    "version": "1.0.0",
+    "last_run": "2026-05-13T19:37:56.799Z",
+    "root": "/home/mizu/Workspaces/personal/tools/imgslim",
+    "include_patterns": [
+      "src/**/*.ts",
+      "package.json",
+      "tsconfig.json"
+    ],
+    "exclude_patterns": [
+      "**/*.test.ts",
+      "**/*.spec.ts",
+      "test/**",
+      "tests/**",
+      "__tests__/**",
+      "dist/**",
+      "build/**",
+      "node_modules/**",
+      "*.md",
+      "LICENSE"
+    ],
+    "exceptions": []
+  },
+  "file_hashes": {
+    "package.json": "48a6c05c97c0b6339640c5a3ee9d34df",
+    "src/cli.ts": "2ee774f80f1a6608e5b8f4408e9b1cca",
+    "src/config.ts": "4aef19bcdf20f0393b7a106dce547ee5",
+    "src/file-walker.ts": "07a51890e3b4ab2c98bf6147eb4ede95",
+    "src/optimizer.ts": "e8d0b2eb28144a226cd52233fb69c8c9",
+    "src/source-scanner.ts": "ad452a8534add4f349806d25fd20ef07",
+    "src/utils.ts": "65025718c167fcebaa440ffd513b2ebc",
+    "tsconfig.json": "98ca48b60ea74bd57cb03b6ffffcd959"
+  },
+  "folder_hashes": {
+    ".": "0e4835ba41c8d60b639353d2cbf7da64",
+    "src": "fc4dec2617f6b1acfb25688e3a9fbce6"
+  }
+}

@@ -1,7 +1,8 @@
 {
   "name": "imgslim",
   "version": "1.0.2",
-  "description": "CLI tool to convert images to WebP format",
+  "description": "CLI tool to convert images to WebP format and minify PNG images",
+  "packageManager": "npm@10.9.0",
   "bin": {
     "imgslim": "./dist/cli.js"
   },
@@ -12,11 +13,12 @@
     "CHANGELOG.md"
   ],
   "scripts": {
-    "prebuild": "rm -rf dist",
+    "prebuild": "node scripts/clean-dist.mjs",
     "build": "tsc",
+    "pretest": "npm run build",
+    "test": "node test/imgslim.test.mjs",
     "prepublishOnly": "npm run build",
-    "start": "node dist/cli.js",
-    "test": "node test/imgslim.test.mjs"
+    "start": "node dist/cli.js"
   },
   "keywords": [
     "image",
