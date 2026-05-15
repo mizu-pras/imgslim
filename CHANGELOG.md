@@ -8,6 +8,14 @@ All notable changes to ImgSlim will be documented in this file.
 ### Added
 - **Scale command** — `imgslim scale <input...> --size 50%` creates suffixed resized images without modifying originals. Supports percent and dimension sizes (`50%`, `800x600`, `800x`, `x600`), dry-run, recursive mode, out-dir, overwrite, JSON, quiet/verbose output, concurrency, and max input pixel safety.
 
+## [1.1.0](https://github.com/mizu-pras/imgslim/compare/v1.0.2...v1.1.0) (2026-05-15)
+
+
+### Features
+
+* add image scale command ([8ee075e](https://github.com/mizu-pras/imgslim/commit/8ee075e0e759a7ecf93a488d8b19173a561e2f4f))
+* improve optimizer safety and scanning ([0599cd8](https://github.com/mizu-pras/imgslim/commit/0599cd8264956f405b58df4e02b9e5e33ba6e92e))
+
 ## [1.0.2] — 2026-04-30
 
 ### Changed
