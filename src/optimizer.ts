@@ -8,6 +8,11 @@ import { walkMatchingFiles } from "./file-walker";
 
 export const SUPPORTED_EXTENSIONS = new Set([".png", ".jpg", ".jpeg", ".svg"]);
 const MINIFY_CANDIDATE_EXTENSIONS = new Set([".png", ".jpg", ".jpeg", ".svg", ".webp"]);
+const SCALE_CANDIDATE_EXTENSIONS = new Set([".png", ".jpg", ".jpeg", ".svg", ".webp"]);
+
+export type ScaleSpec =
+  | { type: "percent"; value: number }
+  | { type: "dimensions"; width?: number; height?: number };
 
 export interface OptimizerOptions {
   outDir?: string;
@@ -18,10 +23,13 @@ export interface OptimizerOptions {
   auto: boolean;
   concurrency: number;
   maxInputPixels: number;
-  mode?: "convert" | "minify";
+  mode?: "convert" | "minify" | "scale";
   minifyDryRun?: boolean;
   minifySuffix?: string;
   minifyLosslessOnly?: boolean;
+  scaleDryRun?: boolean;
+  scaleSuffix?: string;
+  scaleSize?: ScaleSpec;
   onProgress?: (file: string, current: number, total: number) => void;
 }
 
@@ -32,6 +40,10 @@ export interface ConversionResult {
   outputSize: number;
   quality?: number;
   durationMs: number;
+  inputWidth?: number;
+  inputHeight?: number;
+  outputWidth?: number;
+  outputHeight?: number;
 }
 
 export interface SkippedResult {
@@ -60,6 +72,10 @@ export function isImageFile(filePath: string): boolean {
 
 function isMinifyCandidateFile(filePath: string): boolean {
   return MINIFY_CANDIDATE_EXTENSIONS.has(extname(filePath).toLowerCase());
+}
+
+function isScaleCandidateFile(filePath: string): boolean {
+  return SCALE_CANDIDATE_EXTENSIONS.has(extname(filePath).toLowerCase());
 }
 
 function findImageFiles(
@@ -274,7 +290,7 @@ async function convertFile(
   return stats;
 }
 
-function minifyOutputPath(inputPath: string, suffix: string, outDir?: string): string {
+function suffixedOutputPath(inputPath: string, suffix: string, outDir?: string): string {
   const ext = extname(inputPath);
   const base = basename(inputPath, ext);
   const outputName = `${base}${suffix}${ext}`;
@@ -282,6 +298,14 @@ function minifyOutputPath(inputPath: string, suffix: string, outDir?: string): s
     return join(outDir, outputName);
   }
   return join(dirname(inputPath), outputName);
+}
+
+function minifyOutputPath(inputPath: string, suffix: string, outDir?: string): string {
+  return suffixedOutputPath(inputPath, suffix, outDir);
+}
+
+function scaleOutputPath(inputPath: string, suffix: string, outDir?: string): string {
+  return suffixedOutputPath(inputPath, suffix, outDir);
 }
 
 async function minifyFile(
@@ -401,6 +425,153 @@ async function minifyFile(
   return stats;
 }
 
+function calculateScaleDimensions(
+  metadata: sharp.Metadata,
+  spec: ScaleSpec
+): { width: number; height: number } | null {
+  const inputWidth = metadata.width;
+  const inputHeight = metadata.height;
+  if (!inputWidth || !inputHeight) {
+    return null;
+  }
+
+  if (spec.type === "percent") {
+    const ratio = spec.value / 100;
+    const width = Math.max(1, Math.round(inputWidth * ratio));
+    const height = Math.max(1, Math.round(inputHeight * ratio));
+    if (width >= inputWidth && height >= inputHeight) {
+      return null;
+    }
+    return { width, height };
+  }
+
+  if (spec.width && spec.height) {
+    const ratio = Math.min(spec.width / inputWidth, spec.height / inputHeight, 1);
+    const width = Math.max(1, Math.round(inputWidth * ratio));
+    const height = Math.max(1, Math.round(inputHeight * ratio));
+    if (width >= inputWidth && height >= inputHeight) {
+      return null;
+    }
+    return { width, height };
+  }
+
+  if (spec.width) {
+    if (spec.width >= inputWidth) {
+      return null;
+    }
+    return {
+      width: spec.width,
+      height: Math.max(1, Math.round(inputHeight * (spec.width / inputWidth))),
+    };
+  }
+
+  if (spec.height) {
+    if (spec.height >= inputHeight) {
+      return null;
+    }
+    return {
+      width: Math.max(1, Math.round(inputWidth * (spec.height / inputHeight))),
+      height: spec.height,
+    };
+  }
+
+  return null;
+}
+
+async function scaleFile(
+  inputPath: string,
+  options: OptimizerOptions
+): Promise<OptimizerStats> {
+  const stats = emptyStats();
+  const startedAt = performance.now();
+  const ext = extname(inputPath).toLowerCase();
+  const suffix = options.scaleSuffix ?? "_scaled";
+  let tmp: string | undefined;
+
+  if (ext === ".svg") {
+    stats.skipped.push(createSkip(inputPath, "unsupported format for scale, SVG is skipped"));
+    return stats;
+  }
+
+  const spec = options.scaleSize;
+  if (!spec) {
+    stats.failed.push({ path: inputPath, error: "missing scale size" });
+    return stats;
+  }
+
+  const outputPath = scaleOutputPath(inputPath, suffix, options.outDir);
+
+  if (existsSync(outputPath) && !options.overwrite) {
+    stats.skipped.push(createSkip(inputPath, "output exists, use --overwrite to replace", outputPath));
+    return stats;
+  }
+
+  try {
+    const metadata = await createSharpInstance(inputPath, options).metadata();
+    const dimensions = calculateScaleDimensions(metadata, spec);
+    if (!dimensions || !metadata.width || !metadata.height) {
+      stats.skipped.push(createSkip(inputPath, "target size would not reduce image dimensions", outputPath));
+      return stats;
+    }
+
+    if (options.scaleDryRun) {
+      stats.skipped.push(createSkip(inputPath, "would scale in dry-run", outputPath, "would-convert"));
+      return stats;
+    }
+
+    const outputDir = dirname(outputPath);
+    if (!existsSync(outputDir)) {
+      await mkdir(outputDir, { recursive: true });
+    }
+
+    const inputStat = await stat(inputPath);
+    const inputSize = inputStat.size;
+
+    tmp = tmpPathFor(outputPath);
+    await createSharpInstance(inputPath, options)
+      .resize({
+        width: dimensions.width,
+        height: dimensions.height,
+        fit: "inside",
+        withoutEnlargement: true,
+      })
+      .toFile(tmp);
+
+    const outputStat = await stat(tmp);
+    await chmod(tmp, inputStat.mode);
+    await rename(tmp, outputPath);
+    tmp = undefined;
+
+    stats.converted.push({
+      input: inputPath,
+      output: outputPath,
+      inputSize,
+      outputSize: outputStat.size,
+      durationMs: Math.round(performance.now() - startedAt),
+      inputWidth: metadata.width,
+      inputHeight: metadata.height,
+      outputWidth: dimensions.width,
+      outputHeight: dimensions.height,
+    });
+    const bytesSaved = inputSize - outputStat.size;
+    if (bytesSaved > 0) {
+      stats.totalBytesSaved += bytesSaved;
+    }
+  } catch (err: unknown) {
+    if (tmp) {
+      try {
+        await unlink(tmp);
+      } catch {
+        // best-effort cleanup
+      }
+    }
+    const message = err instanceof Error ? err.message : String(err);
+    stats.failed.push({ path: inputPath, error: message });
+  }
+
+  return stats;
+}
+
 async function processPool<T>(
   items: T[],
   concurrency: number,
@@ -426,7 +597,12 @@ export async function optimize(
   // Collect all image files
   const files: string[] = [];
   const isMinify = options.mode === "minify";
-  const isSupportedFile = isMinify ? isMinifyCandidateFile : isImageFile;
+  const isScale = options.mode === "scale";
+  const isSupportedFile = isMinify
+    ? isMinifyCandidateFile
+    : isScale
+      ? isScaleCandidateFile
+      : isImageFile;
   for (const input of inputs) {
     try {
       const found = findImageFiles(input, options.recursive, isSupportedFile);
@@ -437,14 +613,14 @@ export async function optimize(
     }
   }
 
-  // For minify: dedupe + skip files whose basename already ends with active suffix
+  // For suffixed modes: dedupe + skip files whose basename already ends with active suffix
   // (avoids double-suffix on repeated runs) + detect output path collisions
   let filesToProcess: string[];
-  if (isMinify) {
-    const suffix = options.minifySuffix ?? "_min";
+  if (isMinify || isScale) {
+    const suffix = isMinify ? options.minifySuffix ?? "_min" : options.scaleSuffix ?? "_scaled";
+    const outputPathFor = isMinify ? minifyOutputPath : scaleOutputPath;
     const unique = Array.from(new Set(files));
-    // First filter by suffix
-    let filtered = unique.filter((f) => {
+    const filtered = unique.filter((f) => {
       const ext = extname(f);
       const base = basename(f, ext);
       if (base.endsWith(suffix)) {
@@ -453,11 +629,9 @@ export async function optimize(
       }
       return true;
     });
-    // Collision detection: if two input files map to same output path,
-    // skip later duplicates
     const seenOutputs = new Set<string>();
     filesToProcess = filtered.filter((f) => {
-      const outPath = minifyOutputPath(f, suffix, options.outDir);
+      const outPath = outputPathFor(f, suffix, options.outDir);
       if (seenOutputs.has(outPath)) {
         stats.skipped.push(createSkip(f, `output collision with earlier input (${outPath})`, outPath));
         return false;
@@ -487,6 +661,8 @@ export async function optimize(
     options.onProgress?.(file, current, total);
     if (isMinify) {
       resultsByIndex[index] = await minifyFile(file, options);
+    } else if (isScale) {
+      resultsByIndex[index] = await scaleFile(file, options);
     } else {
       resultsByIndex[index] = await convertFile(file, options);
     }

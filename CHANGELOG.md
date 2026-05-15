@@ -2,6 +2,12 @@
 
 All notable changes to ImgSlim will be documented in this file.
 
+
+## Unreleased
+
+### Added
+- **Scale command** — `imgslim scale <input...> --size 50%` creates suffixed resized images without modifying originals. Supports percent and dimension sizes (`50%`, `800x600`, `800x`, `x600`), dry-run, recursive mode, out-dir, overwrite, JSON, quiet/verbose output, concurrency, and max input pixel safety.
+
 ## [1.0.2] — 2026-04-30
 
 ### Changed

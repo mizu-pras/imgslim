@@ -1,15 +1,17 @@
 # ImgSlim
 
-Konversi gambar ke WebP dan minify PNG dari command line. File lebih kecil, CLI sederhana.
+Konversi gambar ke WebP, minify PNG, dan scale gambar dari command line. File lebih kecil, CLI sederhana.
 
-Tiga cara penggunaan:
+Empat cara penggunaan:
 
 1. **Konversi langsung** — arahkan ke gambar atau folder, dapatkan file `.webp`.
 2. **Pemindaian source code** — pindai kode untuk referensi gambar, konversi semua gambar yang ditemukan.
 3. **Minify** — kompres gambar PNG, output `_min.png` di samping original.
+4. **Scale** — resize gambar, output `_scaled` di samping original.
 
 > Untuk konversi: ImgSlim tidak pernah menghapus atau memodifikasi file original. `photo.png` tetap ada — kamu dapat `photo.webp` di sebelahnya.
 > Untuk minify: ImgSlim membuat `_min.png` di samping original. Original tidak pernah dimodifikasi. Gunakan `--overwrite` untuk mengganti `_min.png` yang sudah ada.
+> Untuk scale: ImgSlim membuat output `_scaled` di samping original. Original tidak pernah dimodifikasi. Gunakan `--overwrite` untuk mengganti output scale yang sudah ada.
 
 ---
 
@@ -28,6 +30,14 @@ Minify format berikut tanpa mengubah format:
 - `.png` saja
 
 Input JPG, SVG, dan WebP dilewati di mode `minify` untuk saat ini.
+
+Scale format berikut tanpa mengubah format:
+
+- `.png`
+- `.jpg` / `.jpeg`
+- `.webp`
+
+Input SVG dilewati di mode `scale` untuk saat ini.
 
 ---
 
@@ -71,6 +81,15 @@ imgslim minify photo.png               # membuat photo_min.png
 imgslim minify photo.png --dry-run     # pratinjau saja
 imgslim minify photo.png --suffix .opt # membuat photo.opt.png
 imgslim minify ./images --recursive    # minify semua PNG di folder
+```
+
+**Scale gambar** — resize tanpa mengubah file original:
+
+```bash
+imgslim scale photo.png --size 50%       # membuat photo_scaled.png
+imgslim scale photo.png --size 800x      # lebar 800px, rasio tetap
+imgslim scale photo.png --size x600      # tinggi 600px, rasio tetap
+imgslim scale ./images --recursive --size 50%
 ```
 
 Contoh: jika `./images/` berisi `logo.png`, `hero.jpg`, dan `draft.png` — tapi hanya `logo.png` dan `hero.jpg` yang muncul di HTML/CSS/JS — mode scan hanya mengkonversi dua itu. Mode langsung (`imgslim ./images`) mengkonversi ketiganya.
@@ -281,9 +300,71 @@ imgslim minify photo.png --lossless-only
 
 ---
 
+### Scale
+
+Resize gambar, output file `_scaled` di samping original secara default. Original tidak pernah dimodifikasi.
+
+```bash
+imgslim scale photo.png --size 50%
+```
+
+Hasil: `photo.png` tetap ada, `photo_scaled.png` dibuat.
+
+**Format size**
+
+```bash
+imgslim scale photo.png --size 50%     # 50% dari lebar dan tinggi
+imgslim scale photo.png --size 800x600 # fit di dalam 800×600, rasio tetap
+imgslim scale photo.png --size 800x    # target lebar, rasio tetap
+imgslim scale photo.png --size x600    # target tinggi, rasio tetap
+```
+
+Nilai persen harus lebih dari `0` dan kurang dari `100`. Nilai dimensi harus positif. ImgSlim tidak melakukan upscale.
+
+**Folder (rekursif)**
+
+```bash
+imgslim scale ./images --recursive --size 50%
+```
+
+**Suffix kustom**
+
+```bash
+imgslim scale photo.png --size 50% --suffix _small
+# Hasil: photo_small.png
+```
+
+**Output ke direktori**
+
+```bash
+imgslim scale photo.png --size 50% --out-dir ./dist
+# Hasil: ./dist/photo_scaled.png
+```
+
+Jika banyak file dengan basename sama menargetkan output `--out-dir` yang sama, ImgSlim mempertahankan yang pertama dan melewati collision berikutnya.
+
+> **Format yang didukung:** PNG, JPG/JPEG, dan WebP. Input SVG dilewati.
+>
+> **Catatan:** Scale menulis output format sama dan bisa melakukan rekompresi atau membuang metadata. Dimensi lebih kecil tidak selalu berarti bytes lebih kecil untuk semua gambar.
+
+**Opsi scale**
+
+| Opsi | Deskripsi |
+|---|---|
+| `--size <size>` | Wajib. Ukuran: `50%`, `800x600`, `800x`, atau `x600` |
+| `-r, --recursive` | Pindai direktori secara rekursif |
+| `--dry-run` | Pratinjau apa yang akan di-scale tanpa menulis file |
+| `--suffix <suffix>` | Sufiks output (default: `_scaled`) |
+| `-o, --out-dir <dir>` | Direktori output untuk file hasil scale |
+| `--overwrite` | Ganti file output yang sudah ada (default: skip jika ada) |
+
+Aturan suffix sama seperti minify: tidak kosong, tanpa path separator, dan file yang sudah berakhir dengan suffix aktif dilewati.
+
+---
+
 ### Opsi Konversi
 
-Opsi ini berlaku untuk konversi langsung, `convert`, dan `scan`. Minify memiliki opsi sendiri (lihat di atas). Mode scan juga mendukung `--dry-run` dan `--source-ext` khusus.
+Opsi ini berlaku untuk konversi langsung, `convert`, dan `scan`. Minify dan scale memiliki opsi sendiri (lihat di atas). Mode scan juga mendukung `--dry-run` dan `--source-ext` khusus.
 
 **Kualitas** (default: `80`)
 
@@ -312,7 +393,7 @@ imgslim photo.png --auto
 imgslim photo.png --overwrite
 ```
 
-> `--overwrite` hanya mempengaruhi output `.webp` (convert/scan) atau output `_min.png` (minify). File original tidak pernah dimodifikasi.
+> `--overwrite` hanya mempengaruhi output `.webp` (convert/scan), output `_min.png` (minify), atau output `_scaled` (scale). File original tidak pernah dimodifikasi.
 
 **Rekursif** — pindai folder secara rekursif.
 
@@ -330,20 +411,24 @@ imgslim scan ./src --recursive
 ```
   OK  src/assets/logo.png -> src/assets/logo.webp  (42.1%, 18.4 KB) [q90]
   OK  src/assets/logo.png -> src/assets/logo_min.png  (18.5%, 5.2 KB)
+  OK  src/assets/logo.png -> src/assets/logo_scaled.png  (25.0%, 7.0 KB)
 ```
 
 | Status | Arti |
 |---|---|
-| `OK` | Berhasil dikonversi atau diminify |
+| `OK` | Berhasil dikonversi, diminify, atau di-scale |
 | `SKIP` | Dilewati — output sudah ada, format minify belum didukung, atau tidak ada kandidat lebih kecil |
 | `MISS` | Gambar direferensikan di source tapi file tidak ditemukan |
 | `FAIL` | Error saat membaca atau mengkonversi |
 
-Dry-run minify menampilkan rencana write tanpa membuat file:
+Dry-run minify/scale menampilkan rencana write tanpa membuat file:
 
 ```txt
 Would convert:
   src/assets/logo.png -> src/assets/logo_min.png
+
+Would scale:
+  src/assets/logo.png -> src/assets/logo_scaled.png
 ```
 
 ### Ringkasan
@@ -458,7 +543,7 @@ Flag CLI selalu menimpa nilai konfigurasi.
 
 **Semua kunci yang tersedia**
 
-Config saat ini berlaku untuk output global dan default konversi/scan WebP. Opsi khusus minify (`suffix`, `lossless-only`, minify `out-dir`) masih CLI-only.
+Config saat ini berlaku untuk output global dan default konversi/scan WebP. Opsi khusus minify/scale (`suffix`, `lossless-only`, `size`, mode-specific `out-dir`) masih CLI-only.
 
 | Kunci | Tipe | Deskripsi |
 |---|---|---|
@@ -513,6 +598,12 @@ imgslim minify ./images --recursive --dry-run
 imgslim minify ./images --recursive --out-dir ./optimized
 ```
 
+**Scale gambar ke setengah ukuran**
+
+```bash
+imgslim scale ./images --recursive --size 50%
+```
+
 **Minify PNG gaya lossless**
 
 ```bash
@@ -531,7 +622,8 @@ imgslim ./images --recursive --json --quiet > report.json
 
 - **Konversi tidak pernah menghapus atau memodifikasi file original.** Hanya file `.webp` yang dibuat.
 - **Minify membuat `_min.png` di samping original.** File original tidak pernah dimodifikasi.
-- **Minify dengan `--out-dir` memakai nama output flat.** Basename duplikat dilewati untuk mencegah overwrite.
+- **Scale membuat output `_scaled` di samping original.** File original tidak pernah dimodifikasi.
+- **Minify/scale dengan `--out-dir` memakai nama output flat.** Basename duplikat dilewati untuk mencegah overwrite.
 - **Minify default bisa lossy.** Gunakan `--lossless-only` untuk menghindari palette quantization.
 - **File source code tidak pernah dimodifikasi.** Perintah scan hanya membacanya.
 - **Mode scan hanya mendeteksi referensi string biasa.** Ekspresi dinamis seperti `` `./img${n}.png` `` tidak ditemukan.

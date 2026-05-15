@@ -17,6 +17,7 @@ import {
 } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import sharp from 'sharp';
 
 // ---------------------------------------------------------------------------
 // Paths
@@ -750,6 +751,164 @@ describe('imgslim CLI', () => {
           'Output path should include outDir',
         );
       }
+    });
+  });
+
+
+  // =========================================================================
+  //  Scale subcommand
+  // =========================================================================
+
+  describe('scale subcommand', () => {
+    it('should create _scaled image with --size 50%', async () => {
+      const dir = setupDir('scale-percent', ['0.png']);
+      const input = join(dir, '0.png');
+      const output = join(dir, '0_scaled.png');
+      const before = await sharp(input).metadata();
+
+      const { stdout, exitCode } = run(['scale', input, '--size', '50%']);
+
+      assert.strictEqual(exitCode, 0);
+      assert.ok(existsSync(input), 'Original should remain');
+      assert.ok(existsSync(output), 'Scaled output should exist');
+      assert.ok(stdout.includes('OK'), 'Should report OK');
+
+      const after = await sharp(output).metadata();
+      assert.ok(after.width < before.width, 'Width should shrink');
+      assert.ok(after.height < before.height, 'Height should shrink');
+      assert.ok(Math.abs(after.width - Math.round(before.width * 0.5)) <= 1);
+      assert.ok(Math.abs(after.height - Math.round(before.height * 0.5)) <= 1);
+    });
+
+    it('should support one-sided dimension size', async () => {
+      const dir = setupDir('scale-dim', ['0.png']);
+      const input = join(dir, '0.png');
+      const output = join(dir, '0_scaled.png');
+
+      const { exitCode } = run(['scale', input, '--size', '25x']);
+
+      assert.strictEqual(exitCode, 0);
+      assert.ok(existsSync(output), 'Scaled output should exist');
+      const after = await sharp(output).metadata();
+      assert.strictEqual(after.width, 25);
+      assert.ok(after.height > 0);
+    });
+
+    it('--dry-run should show would-convert without writing files', () => {
+      const dir = setupDir('scale-dryrun', ['0.png']);
+      const input = join(dir, '0.png');
+      const output = join(dir, '0_scaled.png');
+
+      const { stdout, exitCode } = run(['scale', input, '--size', '50%', '--dry-run']);
+
+      assert.strictEqual(exitCode, 0);
+      assert.ok(stdout.includes('Dry-run mode'));
+      assert.ok(stdout.includes('Would scale') || stdout.includes('0_scaled.png'));
+      assert.ok(!existsSync(output), 'No scaled image should be created in dry-run');
+    });
+
+    it('should skip existing output without --overwrite and replace with --overwrite', () => {
+      const dir = setupDir('scale-overwrite', ['0.png']);
+      const input = join(dir, '0.png');
+      const output = join(dir, '0_scaled.png');
+
+      const r1 = run(['scale', input, '--size', '50%']);
+      assert.strictEqual(r1.exitCode, 0);
+      assert.ok(existsSync(output));
+
+      const r2 = run(['scale', input, '--size', '50%']);
+      assert.strictEqual(r2.exitCode, 0);
+      assert.ok(r2.stdout.includes('SKIP'), 'Should skip existing output');
+
+      const r3 = run(['scale', input, '--size', '50%', '--overwrite']);
+      assert.strictEqual(r3.exitCode, 0);
+      assert.ok(r3.stdout.includes('OK'), 'Should overwrite existing output');
+    });
+
+    it('--suffix and --out-dir should control output path', () => {
+      const dir = setupDir('scale-suffix-outdir', ['0.png']);
+      const input = join(dir, '0.png');
+      const outDir = join(dir, 'out');
+      const output = join(outDir, '0_small.png');
+
+      const { stdout, exitCode } = run(['scale', input, '--size', '50%', '--suffix', '_small', '--out-dir', outDir]);
+
+      assert.strictEqual(exitCode, 0);
+      assert.ok(existsSync(output), 'Custom suffixed output should exist in outDir');
+      assert.ok(stdout.includes('0_small.png'));
+      assert.ok(!existsSync(join(dir, '0_scaled.png')), 'Default output should not be created');
+    });
+
+    it('recursive scale should skip double suffix inputs', () => {
+      const dir = setupDir('scale-no-double', ['0.png']);
+      const input = join(dir, '0.png');
+
+      run(['scale', input, '--size', '50%']);
+      const { stdout, exitCode } = run(['scale', dir, '--size', '50%', '--recursive']);
+
+      assert.strictEqual(exitCode, 0);
+      assert.ok(!existsSync(join(dir, '0_scaled_scaled.png')), 'No double suffix');
+      assert.ok(stdout.includes('already has suffix'));
+    });
+
+    it('outDir collision skips duplicate basenames', () => {
+      const dir = setupDir('scale-outdir-collision', ['0.png']);
+      const sub = join(dir, 'sub');
+      mkdirSync(sub, { recursive: true });
+      cpSync(join(TEST_IMAGES, '0.png'), join(sub, '0.png'));
+      const outDir = join(dir, 'out');
+
+      const { stdout, exitCode } = run(['scale', dir, '--size', '50%', '--recursive', '--out-dir', outDir]);
+
+      assert.strictEqual(exitCode, 0);
+      assert.ok(existsSync(join(outDir, '0_scaled.png')), 'First output should exist');
+      assert.ok(stdout.includes('SKIP'), 'Collision should produce SKIP');
+      assert.ok(stdout.includes('collision'), 'Skip reason should mention collision');
+    });
+
+    it('--json should output valid JSON with dimensions', () => {
+      const dir = setupDir('scale-json', ['0.png']);
+      const input = join(dir, '0.png');
+
+      const { stdout, exitCode } = run(['scale', input, '--size', '50%', '--json']);
+
+      assert.strictEqual(exitCode, 0);
+      const parsed = JSON.parse(stdout.trim());
+      assert.strictEqual(parsed.summary.converted, 1);
+      assert.ok(parsed.converted[0].outputWidth > 0);
+      assert.ok(parsed.converted[0].outputHeight > 0);
+      assert.ok(Array.isArray(parsed.skipped));
+      assert.ok(Array.isArray(parsed.failed));
+    });
+
+    it('invalid --size values should error', () => {
+      for (const value of ['abc', '0%', '100%', '150%', '800x0', 'x']) {
+        const { exitCode, stderr } = run(['scale', 'test/0.png', '--size', value]);
+        assert.strictEqual(exitCode, 1, `${value} should fail`);
+        assert.ok(stderr.includes('Error'), `${value} should print Error`);
+      }
+    });
+
+    it('dry-run should skip no-upscale targets instead of reporting would-scale', () => {
+      const dir = setupDir('scale-dryrun-no-upscale', ['0.png']);
+      const input = join(dir, '0.png');
+
+      const { stdout, exitCode } = run(['scale', input, '--size', '9999x', '--dry-run']);
+
+      assert.strictEqual(exitCode, 0);
+      assert.ok(stdout.includes('SKIP'), 'No-upscale dry-run should skip');
+      assert.ok(stdout.includes('target size would not reduce image dimensions'));
+      assert.ok(!stdout.includes('Would scale'), 'Should not report would-scale for no-op target');
+    });
+
+    it('scale --help should show scale-specific options', () => {
+      const { stdout } = run(['scale', '--help']);
+
+      assert.ok(stdout.includes('--size'), 'Help should show --size');
+      assert.ok(stdout.includes('--dry-run'), 'Help should show --dry-run');
+      assert.ok(stdout.includes('--suffix'), 'Help should show --suffix');
+      assert.ok(stdout.includes('--out-dir'), 'Help should show --out-dir');
+      assert.ok(stdout.includes('--overwrite'), 'Help should show --overwrite');
     });
   });
 

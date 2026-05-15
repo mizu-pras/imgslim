@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 import { Command } from "commander";
-import { optimize, isImageFile, OptimizerOptions, OptimizerStats, SkippedResult } from "./optimizer";
+import { optimize, isImageFile, OptimizerOptions, OptimizerStats, SkippedResult, ScaleSpec } from "./optimizer";
 import { scanSourceCodeForImages, SourceScanResult } from "./source-scanner";
 import { formatBytes, percentSaved } from "./utils";
 import { loadConfig } from "./config";
@@ -34,6 +34,37 @@ function parseQuality(value: string): number {
     process.exit(1);
   }
   return q;
+}
+
+
+function validateSuffix(flag: string, suffix: string): void {
+  if (!suffix || suffix.includes("/") || suffix.includes("\\")) {
+    process.stderr.write(`Error: ${flag} must not be empty and must not contain path separators\n`);
+    process.exit(1);
+  }
+}
+
+function parseScaleSize(value: string): ScaleSpec {
+  const trimmed = value.trim();
+  const percentMatch = trimmed.match(/^(\d+(?:\.\d+)?)%$/);
+  if (percentMatch) {
+    const percent = Number(percentMatch[1]);
+    if (Number.isFinite(percent) && percent > 0 && percent < 100) {
+      return { type: "percent", value: percent };
+    }
+  }
+
+  const dimensionMatch = trimmed.match(/^(\d*)x(\d*)$/i);
+  if (dimensionMatch) {
+    const width = dimensionMatch[1] ? Number.parseInt(dimensionMatch[1], 10) : undefined;
+    const height = dimensionMatch[2] ? Number.parseInt(dimensionMatch[2], 10) : undefined;
+    if ((width || height) && (width === undefined || width > 0) && (height === undefined || height > 0)) {
+      return { type: "dimensions", width, height };
+    }
+  }
+
+  process.stderr.write("Error: --size must be like 50%, 800x600, 800x, or x600\n");
+  process.exit(1);
 }
 
 function parsePositiveInteger(flag: string, value: string, max = Number.MAX_SAFE_INTEGER): number {
@@ -88,6 +119,9 @@ function buildOptimizerOptions(base: Partial<OptimizerOptions> & { quality: numb
     minifyDryRun: base.minifyDryRun,
     minifySuffix: base.minifySuffix,
     minifyLosslessOnly: base.minifyLosslessOnly,
+    scaleDryRun: base.scaleDryRun,
+    scaleSuffix: base.scaleSuffix,
+    scaleSize: base.scaleSize,
     onProgress: base.onProgress,
   };
 }
@@ -483,12 +517,8 @@ async function main() {
     .option("--concurrency <number>", "Max parallel image conversions", String(config.concurrency ?? DEFAULT_CONCURRENCY))
     .option("--max-input-pixels <number>", "Sharp input pixel safety limit", String(config.maxInputPixels ?? DEFAULT_MAX_INPUT_PIXELS))
     .action(async (inputs: string[], options) => {
-      // Validate suffix
       const suffix = options.suffix ?? "_min";
-      if (!suffix || suffix.includes("/") || suffix.includes("\\")) {
-        process.stderr.write("Error: --suffix must not be empty and must not contain path separators\n");
-        process.exit(1);
-      }
+      validateSuffix("--suffix", suffix);
 
       const outOpts = getOutputOptions(program);
       const dryRun = options.dryRun === true;
@@ -542,7 +572,7 @@ async function main() {
           }
         }
         if (wouldConverts.length > 0) {
-          console.log("Would convert:");
+          console.log("Would scale:");
           for (const entry of wouldConverts) {
             console.log(`  ${entry}`);
           }
@@ -555,6 +585,89 @@ async function main() {
       }
 
       printSummary(stats, "Minified");
+
+      if (stats.failed.length > 0) process.exit(1);
+    });
+
+
+  // ── scale subcommand ───────────────────────────────────────────────────
+
+  program
+    .command("scale")
+    .description("Scale images to a smaller size (creates _scaled output by default)")
+    .argument("<input...>", "One or more input files or directories")
+    .requiredOption("--size <size>", "Scale size: 50%, 800x600, 800x, or x600")
+    .option("--dry-run", "Show what would be scaled without writing files", false)
+    .option("--suffix <suffix>", "Output suffix (default: _scaled)", "_scaled")
+    .option("-o, --out-dir <dir>", "Output directory for scaled image files")
+    .option("--overwrite", "Replace existing scaled output (default: skip if exists)", false)
+    .option("-r, --recursive", "Recursively scan directories", false)
+    .option("--concurrency <number>", "Max parallel image scaling operations", String(config.concurrency ?? DEFAULT_CONCURRENCY))
+    .option("--max-input-pixels <number>", "Sharp input pixel safety limit", String(config.maxInputPixels ?? DEFAULT_MAX_INPUT_PIXELS))
+    .action(async (inputs: string[], options) => {
+      const suffix = options.suffix ?? "_scaled";
+      validateSuffix("--suffix", suffix);
+      const scaleSize = parseScaleSize(String(options.size));
+
+      const outOpts = getOutputOptions(program);
+      const dryRun = options.dryRun === true;
+      const concurrency = parsePositiveInteger("--concurrency", String(options.concurrency ?? config.concurrency ?? DEFAULT_CONCURRENCY), 64);
+      const maxInputPixels = parsePositiveInteger("--max-input-pixels", String(options.maxInputPixels ?? config.maxInputPixels ?? DEFAULT_MAX_INPUT_PIXELS));
+
+      if (!outOpts.quiet && !outOpts.json) {
+        console.log(`Scaling ${inputs.length} input(s)...`);
+        if (dryRun) console.log("Dry-run mode: no files will be written");
+        if (options.recursive) console.log("Recursive mode enabled");
+      }
+
+      const stats = await optimize(inputs, buildOptimizerOptions({
+        outDir: options.outDir,
+        quality: DEFAULT_QUALITY,
+        lossless: false,
+        recursive: options.recursive === true,
+        overwrite: options.overwrite === true,
+        auto: false,
+        mode: "scale",
+        scaleDryRun: dryRun,
+        scaleSuffix: suffix,
+        scaleSize,
+        onProgress: (outOpts.quiet || outOpts.json)
+          ? undefined
+          : (file, current, total) => {
+              process.stderr.write(`\r  Scaling [${current}/${total}] ${file}`);
+            },
+      }, concurrency, maxInputPixels));
+
+      if (outOpts.json) {
+        console.log(buildJsonOutput(stats));
+        if (stats.failed.length > 0) process.exit(1);
+        return;
+      }
+
+      if (dryRun) {
+        const wouldConverts: string[] = [];
+        const skips: string[] = [];
+        for (const s of stats.skipped) {
+          if (s.status === "would-convert") {
+            wouldConverts.push(formatSkipped(s));
+          } else {
+            skips.push(formatSkipped(s));
+          }
+        }
+        if (wouldConverts.length > 0) {
+          console.log("Would scale:");
+          for (const entry of wouldConverts) {
+            console.log(`  ${entry}`);
+          }
+        }
+        for (const msg of skips) {
+          console.log(` SKIP ${msg}`);
+        }
+      } else {
+        printResults(stats, outOpts);
+      }
+
+      printSummary(stats, "Scaled");
 
       if (stats.failed.length > 0) process.exit(1);
     });

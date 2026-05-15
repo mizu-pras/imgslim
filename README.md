@@ -1,15 +1,17 @@
 # ImgSlim
 
-Convert images to WebP and minify PNG files from the command line. Smaller files, simple CLI.
+Convert images to WebP, minify PNG files, and scale images from the command line. Smaller files, simple CLI.
 
-Three ways to use it:
+Four ways to use it:
 
 1. **Direct conversion** — point it at images or folders, get `.webp` files.
 2. **Source scan** — scan your code for image references, convert all found images.
 3. **Minify** — compress PNG images, output `_min.png` alongside the original.
+4. **Scale** — resize images, output `_scaled` alongside the original.
 
 > For conversion: ImgSlim never deletes or modifies your original files. `photo.png` stays — you get `photo.webp` next to it.
 > For minify: ImgSlim writes `_min.png` alongside the original. The original is never modified. Use `--overwrite` to replace an existing `_min.png`.
+> For scale: ImgSlim writes `_scaled` output alongside the original. The original is never modified. Use `--overwrite` to replace existing scaled output.
 
 ---
 
@@ -28,6 +30,14 @@ Minifies these without changing format:
 - `.png` only
 
 JPG, SVG, and WebP inputs are skipped in `minify` mode for now.
+
+Scales these without changing format:
+
+- `.png`
+- `.jpg` / `.jpeg`
+- `.webp`
+
+SVG inputs are skipped in `scale` mode for now.
 
 ---
 
@@ -71,6 +81,15 @@ imgslim minify photo.png               # creates photo_min.png
 imgslim minify photo.png --dry-run     # preview only
 imgslim minify photo.png --suffix .opt # creates photo.opt.png
 imgslim minify ./images --recursive    # minify all PNGs in folder
+```
+
+**Scale images** — resize while preserving original files:
+
+```bash
+imgslim scale photo.png --size 50%       # creates photo_scaled.png
+imgslim scale photo.png --size 800x      # width 800px, aspect ratio kept
+imgslim scale photo.png --size x600      # height 600px, aspect ratio kept
+imgslim scale ./images --recursive --size 50%
 ```
 
 Example: if `./images/` has `logo.png`, `hero.jpg`, and `draft.png` — but only `logo.png` and `hero.jpg` appear in your HTML/CSS/JS — scan mode converts only those two. Direct mode (`imgslim ./images`) converts all three.
@@ -281,9 +300,71 @@ imgslim minify photo.png --lossless-only
 
 ---
 
+### Scale
+
+Resize images, output a `_scaled` file alongside the original by default. The original is never modified.
+
+```bash
+imgslim scale photo.png --size 50%
+```
+
+Result: `photo.png` stays, `photo_scaled.png` is created.
+
+**Size formats**
+
+```bash
+imgslim scale photo.png --size 50%     # 50% of width and height
+imgslim scale photo.png --size 800x600 # fit inside 800×600, keep aspect ratio
+imgslim scale photo.png --size 800x    # target width, keep aspect ratio
+imgslim scale photo.png --size x600    # target height, keep aspect ratio
+```
+
+Percent values must be greater than `0` and less than `100`. Dimension values must be positive. ImgSlim does not upscale images.
+
+**Folder (recursive)**
+
+```bash
+imgslim scale ./images --recursive --size 50%
+```
+
+**Custom suffix**
+
+```bash
+imgslim scale photo.png --size 50% --suffix _small
+# Result: photo_small.png
+```
+
+**Output to directory**
+
+```bash
+imgslim scale photo.png --size 50% --out-dir ./dist
+# Result: ./dist/photo_scaled.png
+```
+
+When multiple files with the same basename target the same `--out-dir` output, ImgSlim keeps the first and skips later collisions.
+
+> **Supported formats:** PNG, JPG/JPEG, and WebP. SVG inputs are skipped.
+>
+> **Note:** Scaling writes same-format output and may recompress or strip metadata. Smaller dimensions do not guarantee smaller bytes for every image.
+
+**Scale options**
+
+| Option | Description |
+|---|---|
+| `--size <size>` | Required size: `50%`, `800x600`, `800x`, or `x600` |
+| `-r, --recursive` | Scan directories recursively |
+| `--dry-run` | Preview what would be scaled without writing files |
+| `--suffix <suffix>` | Output suffix (default: `_scaled`) |
+| `-o, --out-dir <dir>` | Output directory for scaled image files |
+| `--overwrite` | Replace existing output file (default: skip if exists) |
+
+Suffix rules match minify: non-empty, no path separators, and files already ending with the active suffix are skipped.
+
+---
+
 ### Convert Options
 
-These options apply to direct conversion, `convert`, and `scan`. Minify has its own set of options (see above). Scan mode also supports `--dry-run` and `--source-ext`.
+These options apply to direct conversion, `convert`, and `scan`. Minify and scale have their own sets of options (see above). Scan mode also supports `--dry-run` and `--source-ext`.
 
 **Quality** (default: `80`)
 
@@ -312,7 +393,7 @@ imgslim photo.png --auto
 imgslim photo.png --overwrite
 ```
 
-> `--overwrite` only affects `.webp` outputs (convert/scan) or `_min.png` outputs (minify). Original files are never modified.
+> `--overwrite` only affects `.webp` outputs (convert/scan), `_min.png` outputs (minify), or `_scaled` outputs (scale). Original files are never modified.
 
 **Recursive** — scan folders recursively.
 
@@ -330,20 +411,24 @@ imgslim scan ./src --recursive
 ```
   OK  src/assets/logo.png -> src/assets/logo.webp  (42.1%, 18.4 KB) [q90]
   OK  src/assets/logo.png -> src/assets/logo_min.png  (18.5%, 5.2 KB)
+  OK  src/assets/logo.png -> src/assets/logo_scaled.png  (25.0%, 7.0 KB)
 ```
 
 | Status | Meaning |
 |---|---|
-| `OK` | Converted or minified successfully |
+| `OK` | Converted, minified, or scaled successfully |
 | `SKIP` | Skipped — output exists, unsupported minify format, or no smaller candidate |
 | `MISS` | Image referenced in source but file not found |
 | `FAIL` | Error reading or converting |
 
-Dry-run minify shows planned writes without creating files:
+Dry-run minify/scale shows planned writes without creating files:
 
 ```txt
 Would convert:
   src/assets/logo.png -> src/assets/logo_min.png
+
+Would scale:
+  src/assets/logo.png -> src/assets/logo_scaled.png
 ```
 
 ### Summary
@@ -458,7 +543,7 @@ CLI flags always override config values.
 
 **All available keys**
 
-Config currently applies to global output behavior and WebP conversion/scan defaults. Minify-specific options (`suffix`, `lossless-only`, minify `out-dir`) are CLI-only for now.
+Config currently applies to global output behavior and WebP conversion/scan defaults. Minify/scale-specific options (`suffix`, `lossless-only`, `size`, mode-specific `out-dir`) are CLI-only for now.
 
 | Key | Type | Description |
 |---|---|---|
@@ -513,6 +598,12 @@ imgslim minify ./images --recursive --dry-run
 imgslim minify ./images --recursive --out-dir ./optimized
 ```
 
+**Scale images to half size**
+
+```bash
+imgslim scale ./images --recursive --size 50%
+```
+
 **Lossless-style PNG minify**
 
 ```bash
@@ -531,7 +622,8 @@ imgslim ./images --recursive --json --quiet > report.json
 
 - **Conversion never deletes or modifies original files.** Only `.webp` files are created.
 - **Minify creates `_min.png` alongside the original.** Original files are never modified.
-- **Minify with `--out-dir` flattens output names.** Duplicate basenames are skipped to prevent overwrites.
+- **Scale creates `_scaled` output alongside the original.** Original files are never modified.
+- **Minify/scale with `--out-dir` flattens output names.** Duplicate basenames are skipped to prevent overwrites.
 - **Minify default can be lossy.** Use `--lossless-only` to avoid palette quantization.
 - **Source code files are never modified.** The scan command only reads them.
 - **Scan mode only detects plain string references.** Dynamic expressions like `` `./img${n}.png` `` are not found.

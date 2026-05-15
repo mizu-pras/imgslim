@@ -1,7 +1,7 @@
 {
   "name": "imgslim",
   "version": "1.0.3",
-  "description": "CLI tool to convert images to WebP format and minify PNG images",
+  "description": "CLI tool to convert images to WebP, minify PNG images, and scale image dimensions",
   "packageManager": "npm@10.9.0",
   "bin": {
     "imgslim": "./dist/cli.js"
@@ -27,7 +27,9 @@
     "cli",
     "sharp",
     "compress",
-    "convert"
+    "convert",
+    "resize",
+    "scale"
   ],
   "repository": {
     "type": "git",
