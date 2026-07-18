@@ -324,6 +324,10 @@ Then create GitHub Release from newly pushed `vX.Y.Z` tag. Never run `npm publis
 2. Workflow verifies release tag equals `package.json` version
 3. Workflow runs `npm ci → npm run build → npm test → npm pack --dry-run → packed-package smoke test → npm publish`
 
+### Retry failed publish
+
+Open **Actions → Publish to npm → Run workflow**, enter existing release tag (for example `v1.0.4`), then run. Workflow checks out that tag before publishing.
+
 **Secrets needed:** `NPM_TOKEN` in GitHub repo → Settings → Secrets → Actions.
 
 ### Commit convention
