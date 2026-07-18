@@ -313,14 +313,16 @@ Tests cover:
 npm version patch   # 1.0.0 → 1.0.1
 npm version minor   # 1.0.0 → 1.1.0
 npm version major   # 1.0.0 → 2.0.0
-npm publish --access public
+git push origin master --follow-tags
 ```
 
-### Automated release (CI/CD)
+Then create GitHub Release from newly pushed `vX.Y.Z` tag. Never run `npm publish` locally.
 
-1. Commits to `main` trigger `release-please` → opens Release PR with version bump + changelog
-2. Merging Release PR → creates GitHub Release + triggers publish workflow
-3. Publish workflow: `checkout → npm ci → npm run build → npm test → npm publish`
+### Automated publish (CI/CD)
+
+1. Publishing GitHub Release triggers publish workflow
+2. Workflow verifies release tag equals `package.json` version
+3. Workflow runs `npm ci → npm run build → npm test → npm pack --dry-run → packed-package smoke test → npm publish`
 
 **Secrets needed:** `NPM_TOKEN` in GitHub repo → Settings → Secrets → Actions.
 

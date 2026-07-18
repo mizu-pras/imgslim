@@ -19,6 +19,8 @@ jobs:
           registry-url: https://registry.npmjs.org/
 
       - run: npm ci
+      - name: Verify release tag matches package version
+        run: test "${{ github.event.release.tag_name }}" = "v$(node -p \"require('./package.json').version\")"
       - run: npm run build
       - run: npm test
       - run: npm pack --dry-run
